@@ -540,3 +540,41 @@ input:checked + .slider:before {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* 虫洞悬浮挂件动效 */
+.wormhole-bubble {
+  cursor: grab;
+  user-select: none;
+  animation: pulseWormhole 4s ease-in-out infinite;
+}
+
+.wormhole-bubble:hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 35px rgba(0, 242, 254, 0.6), inset 0 0 25px rgba(0, 242, 254, 0.4) !important;
+  border-color: #00f2fe !important;
+}
+
+.wormhole-bubble:active {
+  cursor: grabbing;
+  transform: scale(0.96);
+}
+
+@keyframes pulseWormhole {
+  0% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(0,242,254,0.3)); }
+  50% { transform: scale(1.03); filter: drop-shadow(0 0 20px rgba(0,242,254,0.6)); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(0,242,254,0.3)); }
+}
+
+/* 即焚图片预览气泡 */
+.image-preview-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 242, 254, 0.1);
+  border: 1px dashed rgba(0, 242, 254, 0.4);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #00f2fe;
+}
+

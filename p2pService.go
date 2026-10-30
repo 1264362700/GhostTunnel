@@ -38,9 +38,10 @@ type PeerInfo struct {
 }
 
 type ClipboardMessage struct {
-	Sender  string `json:"sender"`
-	Content string `json:"content"`
-	Time    string `json:"time"`
+	Sender    string `json:"sender"`
+	Content   string `json:"content"`
+	MediaType string `json:"media_type"` // "text" | "image"
+	Time      string `json:"time"`
 }
 
 type P2PService struct {
@@ -54,6 +55,7 @@ type P2PService struct {
 	isDiscovering   bool
 	hostname        string
 	peersMap        map[string]PeerInfo
+	peerWindows     map[string]application.Window
 	tcpListener     net.Listener
 	notchWindow     *application.NotchWindow
 }
@@ -410,15 +412,30 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 		case MsgTypeText:
 			content := string(frame.Payload)
 			msg := ClipboardMessage{
-				Sender:  remoteAddr,
-				Content: content,
-				Time:    time.Now().Format("15:04:05"),
+				Sender:    remoteAddr,
+				Content:   content,
+				MediaType: "text",
+				Time:      time.Now().Format("15:04:05"),
 			}
 			log.Printf("📩 [收到即焚剪贴板] 来源: %s, 长度: %d 字节", msg.Sender, len(msg.Content))
 			if app := application.Get(); app != nil {
 				app.Event.Emit("p2p:clipboard:received", msg)
 			}
-			// 收到即焚消息自动滑下刘海窗口呈现
+			if p.notchWindow != nil {
+				p.notchWindow.Show()
+			}
+		case MsgTypeImage:
+			content := string(frame.Payload)
+			msg := ClipboardMessage{
+				Sender:    remoteAddr,
+				Content:   content,
+				MediaType: "image",
+				Time:      time.Now().Format("15:04:05"),
+			}
+			log.Printf("🖼️ [收到即焚图片] 来源: %s, 字节数: %d", msg.Sender, len(msg.Content))
+			if app := application.Get(); app != nil {
+				app.Event.Emit("p2p:clipboard:received", msg)
+			}
 			if p.notchWindow != nil {
 				p.notchWindow.Show()
 			}
@@ -459,6 +476,36 @@ func (p *P2PService) SendClipboard(targetIP string, targetPort int, content stri
 	return nil
 }
 
+// 供前端调用的 RPC：向指定节点即时发送图片数据 (Base64 DataURL 或二进制载荷)
+func (p *P2PService) SendImage(targetIP string, targetPort int, imageDataURL string) error {
+	if targetIP == "" {
+		targetIP = "127.0.0.1"
+	}
+	if targetPort <= 0 {
+		targetPort = 9988
+	}
+
+	addr := fmt.Sprintf("%s:%d", targetIP, targetPort)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("建立点对点连接失败(%s): %w", addr, err)
+	}
+	defer conn.Close()
+
+	frame := Frame{
+		MsgType:  MsgTypeImage,
+		StreamID: uint64(time.Now().UnixNano()),
+		Payload:  []byte(imageDataURL),
+	}
+
+	if err := EncodeFrame(conn, frame); err != nil {
+		return fmt.Errorf("发送图片帧失败: %w", err)
+	}
+
+	log.Printf("🖼️ [即焚图片已直传] 目标: %s, 大小: %d 字节", addr, len(frame.Payload))
+	return nil
+}
+
 func (p *P2PService) SetNotchWindow(nw *application.NotchWindow) {
 	p.notchWindow = nw
 }
@@ -483,6 +530,13 @@ func (p *P2PService) HideNotch() error {
 	return nil
 }
 
+func (p *P2PService) ShowNotch() error {
+	if p.notchWindow != nil {
+		p.notchWindow.Show()
+	}
+	return nil
+}
+
 // 供前端调用的多开窗口 RPC：为指定节点单独开辟一个独立的悬浮小窗口
 func (p *P2PService) OpenPeerWindow(instance string, ip string, port int) error {
 	app := application.Get()
@@ -498,7 +552,7 @@ func (p *P2PService) OpenPeerWindow(instance string, ip string, port int) error 
 	}
 
 	url := fmt.Sprintf("/?view=peer&instance=%s&ip=%s&port=%d", instance, ip, port)
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             windowName,
 		Title:            fmt.Sprintf("💻 %s - 点对点直传", instance),
 		Width:            460,
@@ -511,5 +565,66 @@ func (p *P2PService) OpenPeerWindow(instance string, ip string, port int) error 
 		},
 	})
 
+	p.mu.Lock()
+	if p.peerWindows == nil {
+		p.peerWindows = make(map[string]application.Window)
+	}
+	p.peerWindows[windowName] = win
+	p.mu.Unlock()
+
+	return nil
+}
+
+// 打开桌面边缘极简吸附悬浮球
+func (p *P2PService) OpenDropzoneWindow() error {
+	app := application.Get()
+	if app == nil {
+		return fmt.Errorf("应用实例未初始化")
+	}
+
+	windowName := "desktop-dropzone-window"
+	if win, exists := app.Window.GetByName(windowName); exists && win != nil {
+		win.Show()
+		win.Focus()
+		return nil
+	}
+
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             windowName,
+		Title:            "瞬移虫洞",
+		Width:            150,
+		Height:           150,
+		Frameless:        true,
+		DisableResize:    true,
+		AlwaysOnTop:      true,
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+		Mac: application.MacWindow{
+			Backdrop: application.MacBackdropTransparent,
+		},
+		URL: "/?view=dropzone",
+	})
+	return nil
+}
+
+// 一键矩阵平铺所有多开窗口 (Tile Peer Windows)
+func (p *P2PService) TilePeerWindows() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	startX := 120
+	startY := 120
+	step := 45
+	index := 0
+
+	for name, win := range p.peerWindows {
+		if win != nil && win.IsVisible() {
+			win.SetPosition(startX+index*step, startY+index*step)
+			win.Focus()
+			index++
+		} else {
+			delete(p.peerWindows, name)
+		}
+	}
 	return nil
 }

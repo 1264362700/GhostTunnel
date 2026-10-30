@@ -58,14 +58,17 @@ func main() {
 
     // 2. 创建贴合 MacBook 顶部刘海的灵动胶囊窗口 (Notch Window)
     notchWindow := app.Window.NewNotchWindow(application.NotchWindowOptions{
-        Width:    660,
-        Height:   96,
+        Width:    680,
+        Height:   115,
         Animated: true,
         WindowOptions: application.WebviewWindowOptions{
-            Name:         "notch-capsule-window",
-            URL:          "/?view=notch",
-            HideOnEscape: true,
-            AlwaysOnTop:  true,
+            Name:             "notch-capsule-window",
+            URL:              "/?view=notch",
+            HideOnEscape:     true,
+            HideOnFocusLost:  true, // 失焦自动优雅缩回
+            AlwaysOnTop:      true,
+            BackgroundType:   application.BackgroundTypeTransparent,
+            BackgroundColour: application.NewRGBA(0, 0, 0, 0),
         },
     })
     p2pService.SetNotchWindow(notchWindow)

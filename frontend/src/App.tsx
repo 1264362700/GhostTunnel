@@ -6,9 +6,12 @@ import {
   GetStatus,
   GetPeers,
   SendClipboard,
+  SendImage,
   ToggleNotch,
   HideNotch,
   OpenPeerWindow,
+  OpenDropzoneWindow,
+  TilePeerWindows,
   StartBroadcast,
   StopBroadcast,
   StartDiscovery,
@@ -21,7 +24,7 @@ type TabType = 'radar' | 'transfers' | 'settings';
 function App() {
   // 解析多窗口路由参数
   const urlParams = new URLSearchParams(window.location.search);
-  const viewMode = urlParams.get('view'); // 'notch' | 'peer' | null
+  const viewMode = urlParams.get('view'); // 'notch' | 'peer' | 'dropzone' | null
   const peerInstance = urlParams.get('instance') || '未知节点';
   const peerIP = urlParams.get('ip') || '127.0.0.1';
   const peerPort = parseInt(urlParams.get('port') || '9988');
@@ -46,9 +49,14 @@ function App() {
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
 
-  // 剪贴板消息流
+  // 剪贴板消息流与图片捕获
   const [sendText, setSendText] = useState<string>('');
+  const [pastedImage, setPastedImage] = useState<string | null>(null);
   const [receivedMessages, setReceivedMessages] = useState<ClipboardMessage[]>([]);
+
+  // 刘海智能交互状态 (鼠标悬停驻留 & 倒计时自隐)
+  const [notchHovered, setNotchHovered] = useState(false);
+  const notchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -60,6 +68,52 @@ function App() {
       setToast(null);
     }, 4000);
   };
+
+  // 全局剪贴板粘贴监听 (支持截图/图片直接 Cmd+V 捕获)
+  useEffect(() => {
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          const file = items[i].getAsFile();
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              const base64 = event.target?.result as string;
+              if (base64) {
+                setPastedImage(base64);
+                showToast('🖼️ 已捕获剪贴板图片！可在直传区预览并瞬移发送！');
+              }
+            };
+            reader.readAsDataURL(file);
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => window.removeEventListener('paste', handleGlobalPaste);
+  }, []);
+
+  // 刘海窗口自动隐藏控制：若鼠标未悬停，5秒后自动隐回刘海
+  useEffect(() => {
+    if (viewMode !== 'notch') return;
+    if (!notchHovered) {
+      if (notchTimerRef.current) clearTimeout(notchTimerRef.current);
+      notchTimerRef.current = setTimeout(() => {
+        HideNotch();
+      }, 5000);
+    } else {
+      if (notchTimerRef.current) {
+        clearTimeout(notchTimerRef.current);
+        notchTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (notchTimerRef.current) clearTimeout(notchTimerRef.current);
+    };
+  }, [viewMode, notchHovered, receivedMessages]);
 
   useEffect(() => {
     GetStatus().then((s) => s && setStatus(s)).catch(console.error);
@@ -163,6 +217,55 @@ function App() {
       });
   };
 
+  // Base64 DataURL 转 Blob 对象
+  const dataURLtoBlob = (dataurl: string): Blob => {
+    const arr = dataurl.split(',');
+    const match = arr[0].match(/:(.*?);/);
+    const mime = match ? match[1] : 'image/png';
+    const bstr = atob(arr[1] || arr[0]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+      u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], { type: mime });
+  };
+
+  // 一键将图片写入操作系统原生剪贴板 (让用户直接在微信/飞书/文档里 Cmd+V 粘贴)
+  const handleCopyImage = (imageDataURL: string) => {
+    try {
+      const blob = dataURLtoBlob(imageDataURL);
+      navigator.clipboard.write([
+        new ClipboardItem({ [blob.type]: blob })
+      ]).then(() => {
+        showToast('🖼️ 图片已成功写入系统剪贴板！可直接在任意软件 Cmd+V 粘贴！');
+      }).catch((err) => {
+        showToast(`复制图片失败: ${err}`);
+      });
+    } catch (e) {
+      showToast(`处理图片失败: ${e}`);
+    }
+  };
+
+  // 直传图片 RPC
+  const handleSendImage = (overrideIP?: string, overridePort?: number) => {
+    if (!pastedImage) {
+      showToast('当前未捕获到剪贴板图片');
+      return;
+    }
+    const targetIP = overrideIP || selectedPeer?.ip || '127.0.0.1';
+    const targetPort = overridePort || selectedPeer?.port || formConfig.port || 9988;
+
+    SendImage(targetIP, targetPort, pastedImage)
+      .then(() => {
+        showToast('🚀 图片已瞬移直传目标！');
+        setPastedImage(null);
+      })
+      .catch((err) => {
+        showToast(`❌ 发送图片失败: ${err}`);
+      });
+  };
+
   const handleCopy = (content: string) => {
     navigator.clipboard.writeText(content).then(() => {
       showToast('📋 已成功复制到系统剪贴板！');
@@ -197,70 +300,129 @@ function App() {
   // ==================== 1. 专属刘海灵动胶囊窗口视图 ====================
   if (viewMode === 'notch') {
     const latestMsg = receivedMessages[0];
+    const isImage = latestMsg?.media_type === 'image';
+
     return (
-      <div style={{
-        width: '100vw',
-        height: '100vh',
-        background: '#07090e',
-        color: '#f8fafc',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 24px',
-        boxSizing: 'border-box',
-        borderBottom: '1px solid rgba(0, 242, 254, 0.25)',
-        boxShadow: '0 8px 30px rgba(0,0,0,0.8), 0 0 15px rgba(0,242,254,0.15)',
-        overflow: 'hidden',
-      }}>
-        {/* 左侧：胶囊标识 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <img src="/appicon.png" style={{ width: '24px', height: '24px', borderRadius: '6px' }} alt="" />
-          <div>
-            <div style={{ fontSize: '12px', fontWeight: 700, color: '#00f2fe' }}>GHOSTTUNNEL 胶囊</div>
-            <div style={{ fontSize: '10px', color: '#64748b' }}>贴合物理刘海 · 快捷键 Option+Space</div>
-          </div>
-        </div>
-
-        {/* 中间：最新直传文本内容预览 */}
-        <div style={{
-          flex: 1,
-          margin: '0 20px',
-          background: 'rgba(255, 255, 255, 0.04)',
-          padding: '8px 14px',
-          borderRadius: '8px',
-          border: '1px solid rgba(255,255,255,0.06)',
+      <div
+        onMouseEnter={() => setNotchHovered(true)}
+        onMouseLeave={() => {
+          setNotchHovered(false);
+          if (notchTimerRef.current) clearTimeout(notchTimerRef.current);
+          notchTimerRef.current = setTimeout(() => HideNotch(), 1800);
+        }}
+        style={{
+          width: '100vw',
+          height: '100vh',
+          background: '#000000',
+          color: '#f8fafc',
           display: 'flex',
-          alignItems: 'center',
+          flexDirection: 'column',
           justifyContent: 'space-between',
+          padding: '12px 24px 10px',
+          boxSizing: 'border-box',
+          borderBottomLeftRadius: '28px',
+          borderBottomRightRadius: '28px',
+          borderBottom: '1px solid rgba(0, 242, 254, 0.4)',
+          boxShadow: '0 25px 50px rgba(0,0,0,0.95), 0 0 25px rgba(0, 242, 254, 0.25)',
           overflow: 'hidden',
-        }}>
-          {latestMsg ? (
-            <span style={{ fontSize: '12px', color: '#e2e8f0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-              📩 <strong style={{ color: '#00f2fe' }}>{latestMsg.sender}:</strong> {latestMsg.content}
-            </span>
-          ) : (
-            <span style={{ fontSize: '11px', color: '#64748b' }}>暂未收到新的直传消息，对端发送时此处将实时显示</span>
-          )}
+          transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          {/* 左侧：胶囊标识与脉冲呼吸灯 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              background: '#00f2fe',
+              boxShadow: '0 0 10px #00f2fe',
+              animation: 'pulse 2s infinite'
+            }} />
+            <img src="/appicon.png" style={{ width: '22px', height: '22px', borderRadius: '6px' }} alt="" />
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 800, color: '#00f2fe', letterSpacing: '0.5px' }}>
+                GHOSTTUNNEL 灵动岛
+              </div>
+              <div style={{ fontSize: '9px', color: '#64748b' }}>
+                {notchHovered ? '⚡ 鼠标已锁定 · 保持展开' : '⏳ 鼠标离开或无操作将自动收起'}
+              </div>
+            </div>
+          </div>
 
-          {latestMsg && (
-            <button
-              className="btn btn-primary"
-              style={{ padding: '3px 8px', fontSize: '10px', marginLeft: '10px', flexShrink: 0 }}
-              onClick={() => handleCopy(latestMsg.content)}
-            >
-              复制
-            </button>
-          )}
+          {/* 中间：直传内容/图片预览 */}
+          <div style={{
+            flex: 1,
+            margin: '0 16px',
+            background: 'rgba(255, 255, 255, 0.05)',
+            padding: '6px 12px',
+            borderRadius: '10px',
+            border: '1px solid rgba(255,255,255,0.08)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            overflow: 'hidden',
+            maxHeight: '48px',
+          }}>
+            {latestMsg ? (
+              isImage ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                  <img
+                    src={latestMsg.content}
+                    alt="收到截图"
+                    style={{ height: '36px', borderRadius: '4px', border: '1px solid rgba(0,242,254,0.4)', objectFit: 'contain' }}
+                  />
+                  <span style={{ fontSize: '11px', color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+                    🖼️ 来自 <strong style={{ color: '#00f2fe' }}>{latestMsg.sender}</strong> 的图片直传
+                  </span>
+                </div>
+              ) : (
+                <span style={{ fontSize: '11px', color: '#e2e8f0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                  📩 <strong style={{ color: '#00f2fe' }}>{latestMsg.sender}:</strong> {latestMsg.content}
+                </span>
+              )
+            ) : (
+              <span style={{ fontSize: '11px', color: '#64748b' }}>暂未收到新的直传消息，对端发送时此处将灵动唤醒</span>
+            )}
+
+            {latestMsg && (
+              <button
+                className="btn btn-primary"
+                style={{ padding: '3px 10px', fontSize: '10px', marginLeft: '10px', flexShrink: 0, borderRadius: '6px' }}
+                onClick={() => isImage ? handleCopyImage(latestMsg.content) : handleCopy(latestMsg.content)}
+              >
+                {isImage ? '复制图片' : '复制文本'}
+              </button>
+            )}
+          </div>
+
+          {/* 右侧：手动收起 */}
+          <button
+            className="btn btn-secondary"
+            style={{ padding: '4px 10px', fontSize: '10px', borderRadius: '6px' }}
+            onClick={() => HideNotch()}
+            title="立即收起刘海窗口"
+          >
+            ✕
+          </button>
         </div>
 
-        {/* 右侧：收起按钮 */}
-        <button
-          className="btn btn-secondary"
-          style={{ padding: '5px 12px', fontSize: '11px' }}
-          onClick={() => HideNotch()}
-        >
-          收起刘海
-        </button>
+        {/* 底部：流光倒计时进度条 (悬停时暂停全满，移开后5秒平滑清零并隐退) */}
+        <div style={{
+          width: '100%',
+          height: '2px',
+          background: 'rgba(255,255,255,0.06)',
+          borderRadius: '1px',
+          overflow: 'hidden',
+          marginTop: '6px'
+        }}>
+          <div style={{
+            height: '100%',
+            background: 'linear-gradient(90deg, #00f2fe, #4facfe)',
+            width: notchHovered ? '100%' : '0%',
+            transition: notchHovered ? 'none' : 'width 5s linear'
+          }} />
+        </div>
       </div>
     );
   }
@@ -273,29 +435,55 @@ function App() {
         height: '100vh',
         background: '#0c0e14',
         color: '#f8fafc',
-        padding: '20px',
+        padding: '18px',
         boxSizing: 'border-box',
         display: 'flex',
         flexDirection: 'column',
-        gap: '14px',
+        gap: '12px',
       }}>
         {/* 顶部标题栏 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '10px' }}>
           <div>
-            <div style={{ fontSize: '14px', fontWeight: 700, color: '#00f2fe' }}>💻 {peerInstance}</div>
-            <div style={{ fontSize: '11px', color: '#64748b' }}>端对端直传专用隧道 · {peerIP}:{peerPort}</div>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe' }}>💻 {peerInstance}</div>
+            <div style={{ fontSize: '10px', color: '#64748b' }}>端对端直传专用隧道 · {peerIP}:{peerPort}</div>
           </div>
           <span className="pill-badge active">
             <span className="dot"></span>
-            <span>置顶悬浮中</span>
+            <span>置顶悬浮</span>
           </span>
         </div>
 
-        {/* 发送框 */}
+        {/* 剪贴板图片暂存与快捷直传 */}
+        {pastedImage && (
+          <div style={{
+            background: 'rgba(0, 242, 254, 0.08)',
+            border: '1px dashed rgba(0, 242, 254, 0.4)',
+            borderRadius: '8px',
+            padding: '8px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <img src={pastedImage} style={{ height: '32px', borderRadius: '4px' }} alt="" />
+              <span style={{ fontSize: '11px', color: '#00f2fe' }}>已捕获剪贴板图片</span>
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button className="btn btn-primary" style={{ padding: '2px 8px', fontSize: '10px' }} onClick={() => handleSendImage(peerIP, peerPort)}>
+                ⚡ 瞬移发送
+              </button>
+              <button className="btn btn-secondary" style={{ padding: '2px 6px', fontSize: '10px' }} onClick={() => setPastedImage(null)}>
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 文本输入框 */}
         <textarea
           style={{
             width: '100%',
-            height: '90px',
+            height: '80px',
             background: 'rgba(10, 13, 20, 0.8)',
             border: '1px solid rgba(255,255,255,0.1)',
             borderRadius: '8px',
@@ -306,34 +494,99 @@ function App() {
             resize: 'none',
             boxSizing: 'border-box',
           }}
-          placeholder={`在此输入要直传给 ${peerInstance} 的密码、Token、代码...`}
+          placeholder={`输入文本，或在此直接按 Cmd+V 粘贴截图直传给 ${peerInstance}...`}
           value={sendText}
           onChange={(e) => setSendText(e.target.value)}
         />
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
           <button className="btn btn-primary" onClick={() => handleSendClipboard(peerIP, peerPort)}>
-            ⚡ 直传到该节点
+            ⚡ 直传文本
           </button>
         </div>
 
         {/* 消息历史 */}
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <span style={{ fontSize: '11px', color: '#64748b' }}>收到的剪贴流消息:</span>
-          {receivedMessages.map((msg, i) => (
-            <div key={i} style={{ background: 'rgba(255,255,255,0.03)', padding: '10px', borderRadius: '6px', fontSize: '12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b', fontSize: '10px', marginBottom: '4px' }}>
-                <span>{msg.sender}</span>
-                <span>{msg.time}</span>
+          <span style={{ fontSize: '11px', color: '#64748b' }}>收到的剪贴流:</span>
+          {receivedMessages.map((msg, i) => {
+            const isImg = msg.media_type === 'image';
+            return (
+              <div key={i} style={{ background: 'rgba(255,255,255,0.03)', padding: '10px', borderRadius: '6px', fontSize: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b', fontSize: '10px', marginBottom: '4px' }}>
+                  <span>{msg.sender}</span>
+                  <span>{msg.time}</span>
+                </div>
+                {isImg ? (
+                  <div style={{ marginTop: '4px' }}>
+                    <img src={msg.content} style={{ maxWidth: '100%', maxHeight: '140px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)' }} alt="" />
+                    <div style={{ textAlign: 'right', marginTop: '6px' }}>
+                      <button className="btn btn-primary" style={{ padding: '2px 8px', fontSize: '10px' }} onClick={() => handleCopyImage(msg.content)}>
+                        📋 复制图片
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ wordBreak: 'break-all' }}>{msg.content}</div>
+                    <div style={{ textAlign: 'right', marginTop: '6px' }}>
+                      <button className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '10px' }} onClick={() => handleCopy(msg.content)}>
+                        复制
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
-              <div style={{ wordBreak: 'break-all' }}>{msg.content}</div>
-              <div style={{ textAlign: 'right', marginTop: '6px' }}>
-                <button className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '10px' }} onClick={() => handleCopy(msg.content)}>
-                  复制
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== 3. 桌面边缘吸附瞬移虫洞挂件 (Dropzone Bubble) ====================
+  if (viewMode === 'dropzone') {
+    return (
+      <div
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          showToast('🚀 文件已吸入虫洞，正向最近对端瞬移投递！');
+        }}
+        style={{
+          width: '100vw',
+          height: '100vh',
+          background: 'transparent',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          padding: '10px',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div
+          className="wormhole-bubble"
+          title="双击唤醒主控台 · 支持直接拖入文件或按 Cmd+V 投递图片"
+          style={{
+            width: '120px',
+            height: '120px',
+            borderRadius: '50%',
+            background: 'radial-gradient(circle at 35% 35%, rgba(0, 242, 254, 0.35), rgba(7, 9, 14, 0.96))',
+            border: '1.5px solid rgba(0, 242, 254, 0.55)',
+            boxShadow: '0 0 30px rgba(0, 242, 254, 0.35), inset 0 0 25px rgba(0,0,0,0.9)',
+            backdropFilter: 'blur(20px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#fff',
+            textAlign: 'center',
+            transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+          }}
+        >
+          <div style={{ fontSize: '24px', filter: 'drop-shadow(0 0 8px #00f2fe)' }}>🌀</div>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#00f2fe', letterSpacing: '0.5px', marginTop: '2px' }}>瞬移虫洞</div>
+          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.6)' }}>拖入即焚</div>
         </div>
       </div>
     );
@@ -391,14 +644,32 @@ function App() {
           </div>
 
           <div className="status-badges">
-            {/* 多窗口唤起入口 */}
+            {/* 多窗口操作工具栏 */}
             <button
               className="btn btn-secondary"
               style={{ padding: '3px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
               onClick={() => ToggleNotch()}
-              title="也可以按键盘快捷键 Option+Space 唤出"
+              title="贴合 MacBook 物理刘海 (快捷键 Option+Space)"
             >
-              <span>🔔 刘海胶囊</span>
+              <span>🍎 灵动刘海</span>
+            </button>
+
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '3px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              onClick={() => OpenDropzoneWindow()}
+              title="打开桌面角落极简吸附悬浮球"
+            >
+              <span>🔮 桌面虫洞</span>
+            </button>
+
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '3px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              onClick={() => TilePeerWindows()}
+              title="将所有打开的对端独立窗口在屏幕上网格排列"
+            >
+              <span>📐 窗口平铺</span>
             </button>
 
             <div className={`pill-badge ${status.is_broadcasting ? 'active' : ''}`}>
@@ -511,11 +782,44 @@ function App() {
             <div style={{ maxWidth: '780px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <div className="card-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600 }}>即焚剪贴流直传</span>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>即焚剪贴流直传 (支持文本与截图)</span>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                     目标节点: <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{selectedPeer?.instance || '未选择 (默认 127.0.0.1)'}</span>
                   </div>
                 </div>
+
+                {/* 剪贴板图片捕获横幅 */}
+                {pastedImage && (
+                  <div style={{
+                    background: 'rgba(0, 242, 254, 0.08)',
+                    border: '1px dashed rgba(0, 242, 254, 0.45)',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <img
+                        src={pastedImage}
+                        alt="待发图片"
+                        style={{ height: '42px', borderRadius: '4px', border: '1px solid rgba(0, 242, 254, 0.5)' }}
+                      />
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: 600, color: '#00f2fe' }}>🖼️ 剪贴板图片已捕获就绪</div>
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>可以直接瞬移发送给对端</div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button className="btn btn-primary" onClick={() => handleSendImage()}>
+                        ⚡ 瞬移直传图片
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => setPastedImage(null)}>
+                        ✕ 清除
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <textarea
                   style={{
@@ -531,21 +835,21 @@ function App() {
                     resize: 'none',
                     fontFamily: 'inherit',
                   }}
-                  placeholder="在此输入或粘贴密码、Token、代码片段，点击直传瞬间推送对端..."
+                  placeholder="在此输入文本，或直接按 Cmd+V 粘贴系统截图/图片，瞬间推送对端..."
                   value={sendText}
                   onChange={(e) => setSendText(e.target.value)}
                 />
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
                   <button className="btn btn-primary" onClick={() => handleSendClipboard()}>
-                    ⚡ 瞬移发送
+                    ⚡ 瞬移发送文本
                   </button>
                 </div>
               </div>
 
               <div className="card-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600 }}>已接收文本 ({receivedMessages.length})</span>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>已接收剪贴流 ({receivedMessages.length})</span>
                   {receivedMessages.length > 0 && (
                     <span
                       style={{ fontSize: '11px', color: 'var(--text-muted)', cursor: 'pointer' }}
@@ -562,37 +866,68 @@ function App() {
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {receivedMessages.map((msg, idx) => (
-                      <div
-                        key={idx}
-                        style={{
-                          background: 'rgba(255, 255, 255, 0.02)',
-                          border: '1px solid var(--border)',
-                          borderRadius: '8px',
-                          padding: '12px 16px',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '8px',
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
-                          <span>来源: {msg.sender}</span>
-                          <span>时间: {msg.time}</span>
+                    {receivedMessages.map((msg, idx) => {
+                      const isImg = msg.media_type === 'image';
+                      return (
+                        <div
+                          key={idx}
+                          style={{
+                            background: 'rgba(255, 255, 255, 0.02)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '8px',
+                            padding: '12px 16px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)' }}>
+                            <span>来源: {msg.sender}</span>
+                            <span>时间: {msg.time}</span>
+                          </div>
+
+                          {isImg ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                              <img
+                                src={msg.content}
+                                alt="收到图片"
+                                style={{
+                                  maxWidth: '320px',
+                                  maxHeight: '220px',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(0, 242, 254, 0.3)',
+                                  objectFit: 'contain'
+                                }}
+                              />
+                              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                <button
+                                  className="btn btn-primary"
+                                  style={{ padding: '3px 12px', fontSize: '11px' }}
+                                  onClick={() => handleCopyImage(msg.content)}
+                                >
+                                  📋 复制图片到剪贴板
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div style={{ fontSize: '13px', color: 'var(--text-primary)', wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>
+                                {msg.content}
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                <button
+                                  className="btn btn-secondary"
+                                  style={{ padding: '3px 10px', fontSize: '11px' }}
+                                  onClick={() => handleCopy(msg.content)}
+                                >
+                                  📋 复制文本
+                                </button>
+                              </div>
+                            </>
+                          )}
                         </div>
-                        <div style={{ fontSize: '13px', color: 'var(--text-primary)', wordBreak: 'break-all', whiteSpace: 'pre-wrap' }}>
-                          {msg.content}
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                          <button
-                            className="btn btn-secondary"
-                            style={{ padding: '3px 10px', fontSize: '11px' }}
-                            onClick={() => handleCopy(msg.content)}
-                          >
-                            📋 一键复制
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

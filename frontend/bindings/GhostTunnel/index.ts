@@ -6,7 +6,7 @@ export {
     P2PService
 };
 
-export type {
+export {
     ClipboardMessage,
     Config,
     PeerInfo,

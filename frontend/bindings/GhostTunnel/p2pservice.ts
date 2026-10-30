@@ -3,7 +3,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -14,22 +14,35 @@ import * as application$0 from "../github.com/wailsapp/wails/v3/pkg/application/
 import * as $models from "./models.js";
 
 export function GetConfig(): $CancellablePromise<$models.Config> {
-    return $Call.ByID(1375585559);
+    return $Call.ByID(1375585559).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
  * 供前端在组件挂载时主动拉取已捕获的节点列表，避免事件丢失
  */
-export function GetPeers(): $CancellablePromise<$models.PeerInfo[] | null> {
-    return $Call.ByID(2191070);
+export function GetPeers(): $CancellablePromise<$models.PeerInfo[]> {
+    return $Call.ByID(2191070).then(($result: any) => {
+        return $$createType2($result);
+    });
 }
 
 export function GetStatus(): $CancellablePromise<$models.ServiceStatus> {
-    return $Call.ByID(935029663);
+    return $Call.ByID(935029663).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 export function HideNotch(): $CancellablePromise<void> {
     return $Call.ByID(3733933007);
+}
+
+/**
+ * 打开桌面边缘极简吸附悬浮球
+ */
+export function OpenDropzoneWindow(): $CancellablePromise<void> {
+    return $Call.ByID(872042092);
 }
 
 /**
@@ -50,8 +63,19 @@ export function SendClipboard(targetIP: string, targetPort: number, content: str
     return $Call.ByID(539364681, targetIP, targetPort, content);
 }
 
+/**
+ * 供前端调用的 RPC：向指定节点即时发送图片数据 (Base64 DataURL 或二进制载荷)
+ */
+export function SendImage(targetIP: string, targetPort: number, imageDataURL: string): $CancellablePromise<void> {
+    return $Call.ByID(285988994, targetIP, targetPort, imageDataURL);
+}
+
 export function SetNotchWindow(nw: application$0.NotchWindow | null): $CancellablePromise<void> {
     return $Call.ByID(1648709797, nw);
+}
+
+export function ShowNotch(): $CancellablePromise<void> {
+    return $Call.ByID(2371033456);
 }
 
 export function StartBroadcast(): $CancellablePromise<void> {
@@ -71,8 +95,21 @@ export function StopDiscovery(): $CancellablePromise<void> {
 }
 
 /**
+ * 一键矩阵平铺所有多开窗口 (Tile Peer Windows)
+ */
+export function TilePeerWindows(): $CancellablePromise<void> {
+    return $Call.ByID(3787314324);
+}
+
+/**
  * 切换刘海窗口的展示与收起
  */
 export function ToggleNotch(): $CancellablePromise<void> {
     return $Call.ByID(2050985043);
 }
+
+// Private type creation functions
+const $$createType0 = $models.Config.createFrom;
+const $$createType1 = $models.PeerInfo.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $models.ServiceStatus.createFrom;

@@ -19,6 +19,7 @@ const (
 
 	MsgTypeHandshake uint8 = 0x01 // 握手帧
 	MsgTypeText      uint8 = 0x02 // 即焚剪贴流/文本
+	MsgTypeImage     uint8 = 0x03 // 即焚剪贴流/图片 (PNG/JPEG)
 	MsgTypePing      uint8 = 0x09 // 心跳探活
 )
 
