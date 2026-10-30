@@ -195,17 +195,23 @@ func (p *P2PService) GetPeers() []PeerInfo {
 	return result
 }
 
-func (p *P2PService) recordPeer(peer PeerInfo) {
-	p.mu.Lock()
+func (p *P2PService) recordPeerLocked(peer PeerInfo) {
 	if p.peersMap == nil {
 		p.peersMap = make(map[string]PeerInfo)
 	}
 	p.peersMap[peer.Instance] = peer
-	p.mu.Unlock()
 
-	if app := application.Get(); app != nil {
-		app.Event.Emit("p2p:peer:found", peer)
-	}
+	go func(pr PeerInfo) {
+		if app := application.Get(); app != nil {
+			app.Event.Emit("p2p:peer:found", pr)
+		}
+	}(peer)
+}
+
+func (p *P2PService) recordPeer(peer PeerInfo) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recordPeerLocked(peer)
 }
 
 func (p *P2PService) StartBroadcast() error {
@@ -239,8 +245,8 @@ func (p *P2PService) StartBroadcast() error {
 	log.Printf("🚀 [P2P] 广播已开启！名称: %s, 服务: %s", p.hostname, serviceType)
 	p.notifyStatusChange()
 
-	// 本地回环自感知：广播启动后，记录并主动通知前端雷达捕获到本机
-	p.recordPeer(PeerInfo{
+	// 本地回环自感知：广播启动后，记录并主动通知前端雷达捕获到本机 (持有锁状态)
+	p.recordPeerLocked(PeerInfo{
 		Instance: p.hostname,
 		IP:       "127.0.0.1",
 		Port:     port,
@@ -324,9 +330,9 @@ func (p *P2PService) StartDiscovery() error {
 
 	log.Printf("🔍 [P2P] 雷达扫描已启动！搜索: %s", serviceType)
 
-	// 若当前自身正处于广播中，主动触发一次本机回环感知并存库
+	// 若当前自身正处于广播中，主动触发一次本机回环感知并存库 (持有锁状态)
 	if p.isBroadcasting {
-		p.recordPeer(PeerInfo{
+		p.recordPeerLocked(PeerInfo{
 			Instance: p.hostname,
 			IP:       "127.0.0.1",
 			Port:     p.config.Port,
