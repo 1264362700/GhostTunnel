@@ -55,6 +55,7 @@ type P2PService struct {
 	hostname        string
 	peersMap        map[string]PeerInfo
 	tcpListener     net.Listener
+	notchWindow     *application.NotchWindow
 }
 
 // 跨平台智能获取配置文件物理路径：
@@ -417,6 +418,10 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			if app := application.Get(); app != nil {
 				app.Event.Emit("p2p:clipboard:received", msg)
 			}
+			// 收到即焚消息自动滑下刘海窗口呈现
+			if p.notchWindow != nil {
+				p.notchWindow.Show()
+			}
 		case MsgTypePing:
 			// 回复 pong 心跳帧
 			_ = EncodeFrame(conn, Frame{MsgType: MsgTypePing})
@@ -451,5 +456,60 @@ func (p *P2PService) SendClipboard(targetIP string, targetPort int, content stri
 	}
 
 	log.Printf("🚀 [剪贴流已直传] 目标: %s, 字节数: %d", addr, len(frame.Payload))
+	return nil
+}
+
+func (p *P2PService) SetNotchWindow(nw *application.NotchWindow) {
+	p.notchWindow = nw
+}
+
+// 切换刘海窗口的展示与收起
+func (p *P2PService) ToggleNotch() error {
+	if p.notchWindow == nil {
+		return fmt.Errorf("当前系统环境未支持刘海窗口")
+	}
+	if p.notchWindow.Visibility() {
+		p.notchWindow.Hide()
+	} else {
+		p.notchWindow.Show()
+	}
+	return nil
+}
+
+func (p *P2PService) HideNotch() error {
+	if p.notchWindow != nil {
+		p.notchWindow.Hide()
+	}
+	return nil
+}
+
+// 供前端调用的多开窗口 RPC：为指定节点单独开辟一个独立的悬浮小窗口
+func (p *P2PService) OpenPeerWindow(instance string, ip string, port int) error {
+	app := application.Get()
+	if app == nil {
+		return fmt.Errorf("应用实例未初始化")
+	}
+
+	windowName := fmt.Sprintf("peer-window-%s", instance)
+	if win, exists := app.Window.GetByName(windowName); exists && win != nil {
+		win.Show()
+		win.Focus()
+		return nil
+	}
+
+	url := fmt.Sprintf("/?view=peer&instance=%s&ip=%s&port=%d", instance, ip, port)
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             windowName,
+		Title:            fmt.Sprintf("💻 %s - 点对点直传", instance),
+		Width:            460,
+		Height:           520,
+		AlwaysOnTop:      true,
+		URL:              url,
+		BackgroundColour: application.NewRGB(12, 14, 20),
+		Mac: application.MacWindow{
+			Backdrop: application.MacBackdropTranslucent,
+		},
+	})
+
 	return nil
 }

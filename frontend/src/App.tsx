@@ -6,6 +6,9 @@ import {
   GetStatus,
   GetPeers,
   SendClipboard,
+  ToggleNotch,
+  HideNotch,
+  OpenPeerWindow,
   StartBroadcast,
   StopBroadcast,
   StartDiscovery,
@@ -16,6 +19,13 @@ import type { Config, PeerInfo, ServiceStatus, ClipboardMessage } from '../bindi
 type TabType = 'radar' | 'transfers' | 'settings';
 
 function App() {
+  // 解析多窗口路由参数
+  const urlParams = new URLSearchParams(window.location.search);
+  const viewMode = urlParams.get('view'); // 'notch' | 'peer' | null
+  const peerInstance = urlParams.get('instance') || '未知节点';
+  const peerIP = urlParams.get('ip') || '127.0.0.1';
+  const peerPort = parseInt(urlParams.get('port') || '9988');
+
   const [activeTab, setActiveTab] = useState<TabType>('radar');
 
   const [status, setStatus] = useState<ServiceStatus>({
@@ -52,7 +62,6 @@ function App() {
   };
 
   useEffect(() => {
-    // 获取初始状态、配置与已缓存的节点列表
     GetStatus().then((s) => s && setStatus(s)).catch(console.error);
     GetConfig().then((c) => {
       if (c) {
@@ -66,7 +75,6 @@ function App() {
       }
     }).catch(console.error);
 
-    // 监听后端事件
     const unsubStatus = Events.On('p2p:status:change', (ev: any) => {
       if (ev && ev.data) setStatus(ev.data);
     });
@@ -86,7 +94,6 @@ function App() {
       setSelectedPeer((curr) => curr || newPeer);
     });
 
-    // 监听收到对端发送的即焚剪贴板
     const unsubClip = Events.On('p2p:clipboard:received', (ev: any) => {
       if (!ev || !ev.data) return;
       const msg: ClipboardMessage = ev.data;
@@ -101,7 +108,6 @@ function App() {
     };
   }, []);
 
-  // 手动开关广播
   const handleToggleBroadcast = () => {
     if (status.is_broadcasting) {
       StopBroadcast()
@@ -120,7 +126,6 @@ function App() {
     }
   };
 
-  // 手动开关扫描
   const handleToggleDiscovery = () => {
     if (status.is_discovering) {
       StopDiscovery()
@@ -139,19 +144,18 @@ function App() {
     }
   };
 
-  // 发送即焚剪贴板/文本
-  const handleSendClipboard = () => {
+  const handleSendClipboard = (overrideIP?: string, overridePort?: number) => {
     if (!sendText.trim()) {
       showToast('请输入要直传的剪贴板内容');
       return;
     }
 
-    const targetIP = selectedPeer?.ip || '127.0.0.1';
-    const targetPort = selectedPeer?.port || formConfig.port || 9988;
+    const targetIP = overrideIP || selectedPeer?.ip || '127.0.0.1';
+    const targetPort = overridePort || selectedPeer?.port || formConfig.port || 9988;
 
     SendClipboard(targetIP, targetPort, sendText)
       .then(() => {
-        showToast(`🚀 剪贴板已直达 ${selectedPeer?.instance || '目标节点'}`);
+        showToast(`🚀 剪贴板已直达目标`);
         setSendText('');
       })
       .catch((err) => {
@@ -159,16 +163,14 @@ function App() {
       });
   };
 
-  // 一键复制内容到系统剪贴板
   const handleCopy = (content: string) => {
     navigator.clipboard.writeText(content).then(() => {
       showToast('📋 已成功复制到系统剪贴板！');
     }).catch(() => {
-      showToast('复制失败，请手动选取复制');
+      showToast('复制失败，请手动选取');
     });
   };
 
-  // 保存设置页面表单到 config.json
   const handleSaveSettings = () => {
     SaveConfig(formConfig)
       .then(() => {
@@ -179,7 +181,6 @@ function App() {
       });
   };
 
-  // 重置表单为默认值
   const handleResetSettings = () => {
     const defaults: Config = {
       device_name: '',
@@ -190,12 +191,158 @@ function App() {
       auto_discovery: true,
     };
     setFormConfig(defaults);
-    showToast('已重置为默认参数，记得点击下方保存生效');
+    showToast('已重置为默认参数');
   };
 
+  // ==================== 1. 专属刘海灵动胶囊窗口视图 ====================
+  if (viewMode === 'notch') {
+    const latestMsg = receivedMessages[0];
+    return (
+      <div style={{
+        width: '100vw',
+        height: '100vh',
+        background: '#07090e',
+        color: '#f8fafc',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '0 24px',
+        boxSizing: 'border-box',
+        borderBottom: '1px solid rgba(0, 242, 254, 0.25)',
+        boxShadow: '0 8px 30px rgba(0,0,0,0.8), 0 0 15px rgba(0,242,254,0.15)',
+        overflow: 'hidden',
+      }}>
+        {/* 左侧：胶囊标识 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <img src="/appicon.png" style={{ width: '24px', height: '24px', borderRadius: '6px' }} alt="" />
+          <div>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#00f2fe' }}>GHOSTTUNNEL 胶囊</div>
+            <div style={{ fontSize: '10px', color: '#64748b' }}>贴合物理刘海 · 快捷键 Option+Space</div>
+          </div>
+        </div>
+
+        {/* 中间：最新直传文本内容预览 */}
+        <div style={{
+          flex: 1,
+          margin: '0 20px',
+          background: 'rgba(255, 255, 255, 0.04)',
+          padding: '8px 14px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255,255,255,0.06)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          overflow: 'hidden',
+        }}>
+          {latestMsg ? (
+            <span style={{ fontSize: '12px', color: '#e2e8f0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+              📩 <strong style={{ color: '#00f2fe' }}>{latestMsg.sender}:</strong> {latestMsg.content}
+            </span>
+          ) : (
+            <span style={{ fontSize: '11px', color: '#64748b' }}>暂未收到新的直传消息，对端发送时此处将实时显示</span>
+          )}
+
+          {latestMsg && (
+            <button
+              className="btn btn-primary"
+              style={{ padding: '3px 8px', fontSize: '10px', marginLeft: '10px', flexShrink: 0 }}
+              onClick={() => handleCopy(latestMsg.content)}
+            >
+              复制
+            </button>
+          )}
+        </div>
+
+        {/* 右侧：收起按钮 */}
+        <button
+          className="btn btn-secondary"
+          style={{ padding: '5px 12px', fontSize: '11px' }}
+          onClick={() => HideNotch()}
+        >
+          收起刘海
+        </button>
+      </div>
+    );
+  }
+
+  // ==================== 2. 节点专属独立悬浮直传窗口视图 ====================
+  if (viewMode === 'peer') {
+    return (
+      <div style={{
+        width: '100vw',
+        height: '100vh',
+        background: '#0c0e14',
+        color: '#f8fafc',
+        padding: '20px',
+        boxSizing: 'border-box',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '14px',
+      }}>
+        {/* 顶部标题栏 */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '12px' }}>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: '#00f2fe' }}>💻 {peerInstance}</div>
+            <div style={{ fontSize: '11px', color: '#64748b' }}>端对端直传专用隧道 · {peerIP}:{peerPort}</div>
+          </div>
+          <span className="pill-badge active">
+            <span className="dot"></span>
+            <span>置顶悬浮中</span>
+          </span>
+        </div>
+
+        {/* 发送框 */}
+        <textarea
+          style={{
+            width: '100%',
+            height: '90px',
+            background: 'rgba(10, 13, 20, 0.8)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: '8px',
+            padding: '10px',
+            color: '#fff',
+            fontSize: '12px',
+            outline: 'none',
+            resize: 'none',
+            boxSizing: 'border-box',
+          }}
+          placeholder={`在此输入要直传给 ${peerInstance} 的密码、Token、代码...`}
+          value={sendText}
+          onChange={(e) => setSendText(e.target.value)}
+        />
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button className="btn btn-primary" onClick={() => handleSendClipboard(peerIP, peerPort)}>
+            ⚡ 直传到该节点
+          </button>
+        </div>
+
+        {/* 消息历史 */}
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <span style={{ fontSize: '11px', color: '#64748b' }}>收到的剪贴流消息:</span>
+          {receivedMessages.map((msg, i) => (
+            <div key={i} style={{ background: 'rgba(255,255,255,0.03)', padding: '10px', borderRadius: '6px', fontSize: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b', fontSize: '10px', marginBottom: '4px' }}>
+                <span>{msg.sender}</span>
+                <span>{msg.time}</span>
+              </div>
+              <div style={{ wordBreak: 'break-all' }}>{msg.content}</div>
+              <div style={{ textAlign: 'right', marginTop: '6px' }}>
+                <button className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: '10px' }} onClick={() => handleCopy(msg.content)}>
+                  复制
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== 3. 主控制台窗口 (Main Dashboard) ====================
   return (
     <div className="app-layout">
-      {/* 左侧导航侧边栏 */}
+      {/* 侧边栏 */}
       <aside className="sidebar">
         <div className="sidebar-brand">
           <img src="/appicon.png" style={{ width: '28px', height: '28px', borderRadius: '7px', boxShadow: '0 0 12px rgba(0, 242, 254, 0.35)' }} alt="Logo" />
@@ -234,9 +381,8 @@ function App() {
         </div>
       </aside>
 
-      {/* 右侧主工作区 */}
+      {/* 主展示区 */}
       <main className="main-content">
-        {/* 顶部指示条 */}
         <header className="top-header">
           <div className="page-title">
             {activeTab === 'radar' && '局域网对等节点雷达'}
@@ -245,6 +391,16 @@ function App() {
           </div>
 
           <div className="status-badges">
+            {/* 多窗口唤起入口 */}
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '3px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              onClick={() => ToggleNotch()}
+              title="也可以按键盘快捷键 Option+Space 唤出"
+            >
+              <span>🔔 刘海胶囊</span>
+            </button>
+
             <div className={`pill-badge ${status.is_broadcasting ? 'active' : ''}`}>
               <span className="dot"></span>
               <span>{status.is_broadcasting ? '广播就绪' : '广播休眠'}</span>
@@ -257,9 +413,7 @@ function App() {
           </div>
         </header>
 
-        {/* 滚动工作区 */}
         <div className="scroll-view">
-          {/* 1. 雷达感知视图 */}
           {activeTab === 'radar' && (
             <div className="radar-grid">
               <div className="card-panel">
@@ -288,7 +442,6 @@ function App() {
                 </div>
               </div>
 
-              {/* 在线设备感知列表 */}
               <div className="card-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '13px', fontWeight: 600 }}>捕获的对端节点 ({peers.length})</span>
@@ -324,16 +477,25 @@ function App() {
                               {p.ip || '127.0.0.1'}:{p.port}
                             </div>
                           </div>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                             <button
                               className="btn btn-secondary"
-                              style={{ padding: '4px 10px', fontSize: '11px' }}
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
                               onClick={() => {
                                 setSelectedPeer(p);
                                 setActiveTab('transfers');
                               }}
                             >
                               ⚡ 直传
+                            </button>
+                            {/* 多窗口独立开窗按钮 */}
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
+                              onClick={() => OpenPeerWindow(p.instance, p.ip || '127.0.0.1', p.port)}
+                              title="为该节点开辟独立的置顶悬浮直传窗口"
+                            >
+                              ⧉ 独立开窗
                             </button>
                           </div>
                         </div>
@@ -345,10 +507,8 @@ function App() {
             </div>
           )}
 
-          {/* 2. 极速传输视图 —— 即焚剪贴流实装 */}
           {activeTab === 'transfers' && (
             <div style={{ maxWidth: '780px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-              {/* 发送卡片 */}
               <div className="card-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '13px', fontWeight: 600 }}>即焚剪贴流直传</span>
@@ -377,13 +537,12 @@ function App() {
                 />
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-                  <button className="btn btn-primary" onClick={handleSendClipboard}>
+                  <button className="btn btn-primary" onClick={() => handleSendClipboard()}>
                     ⚡ 瞬移发送
                   </button>
                 </div>
               </div>
 
-              {/* 接收卡片列表 */}
               <div className="card-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '13px', fontWeight: 600 }}>已接收文本 ({receivedMessages.length})</span>
@@ -440,7 +599,6 @@ function App() {
             </div>
           )}
 
-          {/* 3. 系统设置 (Settings) 页面 */}
           {activeTab === 'settings' && (
             <div className="settings-container">
               <div className="settings-group">
@@ -546,7 +704,6 @@ function App() {
         </div>
       </main>
 
-      {/* 浮动 Toast 状态反馈 */}
       {toast && (
         <div className="toast-bar">
           <span>{toast}</span>

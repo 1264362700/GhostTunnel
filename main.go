@@ -2,9 +2,7 @@ package main
 
 import (
     "embed"
-
     "log"
-    "time"
 
     "github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -28,11 +26,13 @@ func init() {
 // and starts a goroutine that emits a time-based event every second. It subsequently runs the application and
 // logs any error that might occur.
 func main() {
+    p2pService := &P2PService{}
+
     app := application.New(application.Options{
-        Name:        "desktop App",
-        Description: "A demo of using raw HTML & CSS",
+        Name:        "GhostTunnel",
+        Description: "P2P Zero-Relay Instant Tunnel",
         Services: []application.Service{
-            application.NewService(&P2PService{}),
+            application.NewService(p2pService),
         },
         Assets: application.AssetOptions{
             Handler: application.AssetFileServerFS(assets),
@@ -42,14 +42,9 @@ func main() {
         },
     })
 
-    // Create a new window with the necessary options.
-    // 'Title' is the title of the window.
-    // 'Mac' options tailor the window when running on macOS.
-    // 'BackgroundColour' is the background colour of the window.
-    // 'URL' is the URL that will be loaded into the webview.
+    // 1. 创建主控制台窗口 (Main Dashboard Window)
     app.Window.NewWithOptions(application.WebviewWindowOptions{
-        Title: "Window 1",
-        // Window sized to the golden ratio (1000 / 618 ≈ 1.618).
+        Title:  "GhostTunnel 控制中心",
         Width:  1000,
         Height: 618,
         Mac: application.MacWindow{
@@ -57,25 +52,30 @@ func main() {
             Backdrop:                application.MacBackdropTranslucent,
             TitleBar:                application.MacTitleBarHiddenInset,
         },
-        BackgroundColour: application.NewRGB(6, 7, 15),
+        BackgroundColour: application.NewRGB(12, 14, 20),
         URL:              "/",
-        Frameless:        true,
     })
 
-    // Create a goroutine that emits an event containing the current time every second.
-    // The frontend can listen to this event and update the UI accordingly.
-    go func() {
-        for {
-            now := time.Now().Format(time.RFC1123)
-            app.Event.Emit("time", now)
-            time.Sleep(time.Second)
-        }
-    }()
+    // 2. 创建贴合 MacBook 顶部刘海的灵动胶囊窗口 (Notch Window)
+    notchWindow := app.Window.NewNotchWindow(application.NotchWindowOptions{
+        Width:    660,
+        Height:   96,
+        Animated: true,
+        WindowOptions: application.WebviewWindowOptions{
+            Name:         "notch-capsule-window",
+            URL:          "/?view=notch",
+            HideOnEscape: true,
+            AlwaysOnTop:  true,
+        },
+    })
+    p2pService.SetNotchWindow(notchWindow)
 
-    // Run the application. This blocks until the application has been exited.
+    // 3. 注册全局快捷键 Option+Space 随时唤出/收起刘海窗口
+    _ = app.GlobalShortcut.Register("Option+Space", func() {
+        _ = p2pService.ToggleNotch()
+    })
+
     err := app.Run()
-
-    // If an error occurred while running the application, log it and exit.
     if err != nil {
         log.Fatal(err)
     }

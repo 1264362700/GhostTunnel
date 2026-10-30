@@ -7,6 +7,10 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as application$0 from "../github.com/wailsapp/wails/v3/pkg/application/models.js";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
 export function GetConfig(): $CancellablePromise<$models.Config> {
@@ -24,6 +28,17 @@ export function GetStatus(): $CancellablePromise<$models.ServiceStatus> {
     return $Call.ByID(935029663);
 }
 
+export function HideNotch(): $CancellablePromise<void> {
+    return $Call.ByID(3733933007);
+}
+
+/**
+ * 供前端调用的多开窗口 RPC：为指定节点单独开辟一个独立的悬浮小窗口
+ */
+export function OpenPeerWindow(instance: string, ip: string, port: number): $CancellablePromise<void> {
+    return $Call.ByID(2217738199, instance, ip, port);
+}
+
 export function SaveConfig(cfg: $models.Config): $CancellablePromise<void> {
     return $Call.ByID(2928519568, cfg);
 }
@@ -33,6 +48,10 @@ export function SaveConfig(cfg: $models.Config): $CancellablePromise<void> {
  */
 export function SendClipboard(targetIP: string, targetPort: number, content: string): $CancellablePromise<void> {
     return $Call.ByID(539364681, targetIP, targetPort, content);
+}
+
+export function SetNotchWindow(nw: application$0.NotchWindow | null): $CancellablePromise<void> {
+    return $Call.ByID(1648709797, nw);
 }
 
 export function StartBroadcast(): $CancellablePromise<void> {
@@ -49,4 +68,11 @@ export function StopBroadcast(): $CancellablePromise<void> {
 
 export function StopDiscovery(): $CancellablePromise<void> {
     return $Call.ByID(1790335835);
+}
+
+/**
+ * 切换刘海窗口的展示与收起
+ */
+export function ToggleNotch(): $CancellablePromise<void> {
+    return $Call.ByID(2050985043);
 }
