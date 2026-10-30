@@ -45,6 +45,7 @@ type FileMeta struct {
 	Filename string `json:"filename"`
 	FileSize int64  `json:"file_size"`
 	IsFolder bool   `json:"is_folder"`
+	Offset   int64  `json:"offset,omitempty"`
 }
 
 type FileRequestPayload struct {
@@ -56,11 +57,33 @@ type FileRequestPayload struct {
 }
 
 type FileResponsePayload struct {
-	StreamID    uint64 `json:"stream_id"`
-	Accepted    bool   `json:"accepted"`
-	CustomPath  string `json:"custom_path"`
-	TrustSender bool   `json:"trust_sender"`
-	SenderName  string `json:"sender_name"`
+	StreamID     uint64 `json:"stream_id"`
+	Accepted     bool   `json:"accepted"`
+	CustomPath   string `json:"custom_path"`
+	TrustSender  bool   `json:"trust_sender"`
+	SenderName   string `json:"sender_name"`
+	ResumeOffset int64  `json:"resume_offset,omitempty"`
+}
+
+type TransferRecord struct {
+	ID         string `json:"id"`
+	StreamID   uint64 `json:"stream_id"`
+	Filename   string `json:"filename"`
+	FileSize   int64  `json:"file_size"`
+	SenderName string `json:"sender_name"`
+	IsFolder   bool   `json:"is_folder"`
+	SavePath   string `json:"save_path"`
+	Direction  string `json:"direction"` // "send" or "receive"
+	Status     string `json:"status"`    // "completed" or "failed"
+	Timestamp  string `json:"timestamp"`
+}
+
+type STUNInfo struct {
+	PublicIP   string `json:"public_ip"`
+	PublicPort int    `json:"public_port"`
+	ShortCode  string `json:"short_code"`
+	Status     string `json:"status"` // "online", "probing", "failed"
+	NATType    string `json:"nat_type"`
 }
 
 type TransferProgress struct {

@@ -21,8 +21,23 @@ import {
   StopBroadcast,
   StartDiscovery,
   StopDiscovery,
+  GetSTUNInfo,
+  RefreshSTUN,
+  ConnectWAN,
+  GetTransferHistory,
+  ClearTransferHistory,
+  OpenFileLocation,
 } from '../bindings/GhostTunnel/p2pservice';
-import type { Config, PeerInfo, ServiceStatus, ClipboardMessage, TransferProgress, PendingFileRequest } from '../bindings/GhostTunnel/models';
+import type {
+  Config,
+  PeerInfo,
+  ServiceStatus,
+  ClipboardMessage,
+  TransferProgress,
+  PendingFileRequest,
+  STUNInfo,
+  TransferRecord,
+} from '../bindings/GhostTunnel/models';
 
 type TabType = 'radar' | 'transfers' | 'settings';
 
@@ -55,6 +70,21 @@ function App() {
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
 
+  // 公网穿透与 STUN 状态
+  const [stunInfo, setStunInfo] = useState<STUNInfo>({
+    public_ip: '',
+    public_port: 0,
+    short_code: '',
+    status: 'probing',
+    nat_type: 'Detecting',
+  });
+  const [showSTUNModal, setShowSTUNModal] = useState<boolean>(false);
+  const [wanInputAddr, setWanInputAddr] = useState<string>('');
+  const [wanConnecting, setWanConnecting] = useState<boolean>(false);
+
+  // 本地持久化传输历史记录
+  const [transferHistory, setTransferHistory] = useState<TransferRecord[]>([]);
+
   // 待确认的文件传输请求 (用于卡片授权)
   const [pendingRequest, setPendingRequest] = useState<PendingFileRequest | null>(null);
   const [customSaveDir, setCustomSaveDir] = useState<string>('~/Downloads/GhostTunnel');
@@ -65,8 +95,10 @@ function App() {
   const [pastedImage, setPastedImage] = useState<string | null>(null);
   const [receivedMessages, setReceivedMessages] = useState<ClipboardMessage[]>([]);
 
-  // 阶段三：文件与文件夹分块传输实时进度流
+  // 阶段三：文件与文件夹分块传输实时进度流与流速波形
   const [currentTransfer, setCurrentTransfer] = useState<TransferProgress | null>(null);
+  const [speedHistory, setSpeedHistory] = useState<number[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -120,6 +152,10 @@ function App() {
       }
     }).catch(console.error);
 
+    // 拉取 STUN 公网映射与持久化历史记录
+    GetSTUNInfo().then((info) => info && setStunInfo(info)).catch(console.error);
+    GetTransferHistory().then((recs) => recs && setTransferHistory(recs)).catch(console.error);
+
     const unsubStatus = Events.On('p2p:status:change', (ev: any) => {
       if (ev && ev.data) setStatus(ev.data);
     });
@@ -150,15 +186,30 @@ function App() {
       if (!ev || !ev.data) return;
       const prog: TransferProgress = ev.data;
       setCurrentTransfer(prog);
+      setSpeedHistory((prev) => {
+        const next = [...prev, prog.speed_bps];
+        return next.length > 25 ? next.slice(next.length - 25) : next;
+      });
       if (prog.is_complete) {
-        setTimeout(() => setCurrentTransfer(null), 3000);
+        setTimeout(() => {
+          setCurrentTransfer(null);
+          setSpeedHistory([]);
+        }, 3000);
       }
     });
 
     const unsubComp = Events.On('p2p:transfer:completed', (ev: any) => {
       if (!ev || !ev.data) return;
       const prog: TransferProgress = ev.data;
-      showToast(`🎉 文件 [${prog.filename}] 接收完成！已保存至 Downloads/GhostTunnel`);
+      showToast(`🎉 文件 [${prog.filename}] 接收完成并持久化落盘！`);
+      GetTransferHistory().then((recs) => recs && setTransferHistory(recs)).catch(console.error);
+    });
+
+    const unsubSTUN = Events.On('p2p:stun:updated', (ev: any) => {
+      if (!ev || !ev.data) return;
+      const info: STUNInfo = ev.data;
+      setStunInfo(info);
+      showToast(`🌐 STUN 公网映射已就绪: ${info.public_ip}:${info.public_port} (${info.short_code})`);
     });
 
     const unsubReq = Events.On('p2p:transfer:request', (ev: any) => {
@@ -174,9 +225,105 @@ function App() {
       unsubClip();
       unsubProg();
       unsubComp();
+      unsubSTUN();
       unsubReq();
     };
   }, []);
+
+  // 绘制动态流速霓虹波形图 (Canvas)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    if (speedHistory.length < 2) return;
+
+    // 绘制中心弱参考线
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+
+    const maxSpeed = Math.max(...speedHistory, 1024 * 1024); // 至少 1MB/s 为基准
+    const stepX = w / (speedHistory.length - 1);
+
+    // 绘制平滑发光折线
+    ctx.beginPath();
+    speedHistory.forEach((spd, i) => {
+      const x = i * stepX;
+      const y = h - (spd / maxSpeed) * (h - 10) - 5;
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+
+    ctx.strokeStyle = '#00f2fe';
+    ctx.lineWidth = 2;
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = '#00f2fe';
+    ctx.stroke();
+
+    // 闭合填充半透明发光渐变区域
+    ctx.lineTo(w, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, 'rgba(0, 242, 254, 0.28)');
+    grad.addColorStop(1, 'rgba(0, 242, 254, 0.0)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }, [speedHistory]);
+
+  const handleRefreshSTUN = () => {
+    RefreshSTUN()
+      .then((info) => {
+        if (info) {
+          setStunInfo(info);
+          showToast(`🌐 STUN 刷新完成: ${info.public_ip || '未穿透'}:${info.public_port}`);
+        }
+      })
+      .catch((e) => showToast(`STUN 探测失败: ${e}`));
+  };
+
+  const handleConnectWAN = () => {
+    if (!wanInputAddr.trim()) {
+      showToast('请输入对端公网 IP:Port');
+      return;
+    }
+    setWanConnecting(true);
+    ConnectWAN(wanInputAddr.trim())
+      .then(() => {
+        showToast(`⚡ 公网安全节点直连成功: ${wanInputAddr}`);
+        setShowSTUNModal(false);
+        setWanInputAddr('');
+        GetPeers().then((list) => list && setPeers(list));
+      })
+      .catch((e) => showToast(`公网直连失败: ${e}`))
+      .finally(() => setWanConnecting(false));
+  };
+
+  const handleClearHistory = () => {
+    ClearTransferHistory()
+      .then(() => {
+        setTransferHistory([]);
+        showToast('已清空本地传输历史记录');
+      })
+      .catch((e) => showToast(`清空历史失败: ${e}`));
+  };
+
+  const handleOpenFileLocation = (path: string) => {
+    OpenFileLocation(path).catch((e) => showToast(`无法定位文件: ${e}`));
+  };
 
   const handleToggleBroadcast = () => {
     if (status.is_broadcasting) {
@@ -737,6 +884,24 @@ function App() {
           </div>
 
           <div className="status-badges">
+            {/* STUN 公网穿透与 6 位密码短码 */}
+            <button
+              className="btn btn-secondary"
+              style={{
+                padding: '3px 10px',
+                fontSize: '11px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                borderColor: stunInfo.status === 'online' ? 'rgba(0, 242, 254, 0.5)' : undefined,
+                color: stunInfo.status === 'online' ? '#00f2fe' : undefined,
+              }}
+              onClick={() => setShowSTUNModal(true)}
+              title="查看 STUN 公网映射与 6 位密码学直连短码"
+            >
+              <span>🌐 {stunInfo.status === 'online' ? `${stunInfo.short_code} · ${stunInfo.public_ip}:${stunInfo.public_port}` : stunInfo.status === 'probing' ? 'STUN探测中...' : '公网穿透'}</span>
+            </button>
+
             {/* 多窗口操作工具栏 */}
             <button
               className="btn btn-secondary"
@@ -947,8 +1112,15 @@ function App() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{ fontSize: '16px' }}>⚡</span>
                       <div>
-                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe' }}>
-                          正在传输: {currentTransfer.filename}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe' }}>
+                            正在传输: {currentTransfer.filename}
+                          </span>
+                          {currentTransfer.sent_bytes > 0 && currentTransfer.percent > 0 && (
+                            <span style={{ fontSize: '10px', color: '#f59e0b', background: 'rgba(245, 158, 11, 0.15)', padding: '1px 6px', borderRadius: '4px', border: '1px solid rgba(245, 158, 11, 0.4)' }}>
+                              ⚡ 断点续传保护
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                           {(currentTransfer.sent_bytes / 1024 / 1024).toFixed(2)} MB / {(currentTransfer.total_bytes / 1024 / 1024).toFixed(2)} MB
@@ -972,6 +1144,27 @@ function App() {
                       width: `${currentTransfer.percent}%`,
                       transition: 'width 0.15s ease-out'
                     }} />
+                  </div>
+
+                  {/* 实时流速动态霓虹波形图 (Canvas) */}
+                  <div style={{ marginTop: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>动态传输速率波形 (最近 25s)</span>
+                      <span style={{ fontSize: '10px', color: '#00f2fe' }}>{(currentTransfer.speed_bps / 1024 / 1024).toFixed(2)} MB/s 瞬时</span>
+                    </div>
+                    <canvas
+                      ref={canvasRef}
+                      width={740}
+                      height={44}
+                      style={{
+                        width: '100%',
+                        height: '44px',
+                        background: 'rgba(0, 0, 0, 0.35)',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(0, 242, 254, 0.2)',
+                        display: 'block',
+                      }}
+                    />
                   </div>
                 </div>
               )}
@@ -1149,6 +1342,65 @@ function App() {
                   </div>
                 )}
               </div>
+
+              {/* 本地持久化传输历史记录面板 */}
+              <div className="card-panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600 }}>📜 传输历史与文件管理 ({transferHistory.length})</span>
+                    <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>本地持久化 · 支持原生访达定位</span>
+                  </div>
+                  {transferHistory.length > 0 && (
+                    <span
+                      style={{ fontSize: '11px', color: 'var(--danger)', cursor: 'pointer' }}
+                      onClick={handleClearHistory}
+                    >
+                      清空历史
+                    </span>
+                  )}
+                </div>
+
+                {transferHistory.length === 0 ? (
+                  <div className="empty-placeholder" style={{ padding: '24px 0' }}>
+                    暂无本地传输记录，发送或接收文件后自动持久化沉淀
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
+                    {transferHistory.map((rec, idx) => {
+                      const isSend = rec.direction === 'send';
+                      return (
+                        <div key={rec.id || idx} className="history-row">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
+                            <span style={{ fontSize: '14px' }}>{isSend ? '⬆️' : '⬇️'}</span>
+                            <div style={{ overflow: 'hidden' }}>
+                              <div style={{ fontSize: '12px', fontWeight: 600, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '400px' }}>
+                                {rec.filename}
+                              </div>
+                              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                                {isSend ? '发往对端' : `来自 ${rec.sender_name}`} · {(rec.file_size / 1024 / 1024).toFixed(2)} MB · {rec.timestamp}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '10px', color: '#10b981', background: 'rgba(16, 185, 129, 0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                              已完成
+                            </span>
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '2px 8px', fontSize: '10px' }}
+                              onClick={() => handleOpenFileLocation(rec.save_path)}
+                              title="在 macOS 访达中定位并高亮选中此文件"
+                            >
+                              📂 访达定位
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1256,7 +1508,7 @@ function App() {
                       <div key={idx} className="form-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
                           <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>💻 {sender}</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>自动保存目录: {path}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>自动保存目录: {String(path)}</div>
                         </div>
                         <button
                           className="btn btn-secondary"
@@ -1287,6 +1539,110 @@ function App() {
           )}
         </div>
       </main>
+
+      {/* 公网 STUN 穿透与 6 位密码学直连模态框 */}
+      {showSTUNModal && (
+        <div className="modal-overlay" onClick={() => setShowSTUNModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '18px' }}>🌐</span>
+                <span style={{ fontSize: '14px', fontWeight: 700, color: '#00f2fe' }}>
+                  公网 STUN 反射穿透与 TLS 1.3 直连
+                </span>
+              </div>
+              <button
+                className="btn btn-secondary"
+                style={{ padding: '2px 8px', fontSize: '11px' }}
+                onClick={() => setShowSTUNModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 本机公网反射信息卡片 */}
+            <div style={{
+              background: 'rgba(0, 242, 254, 0.05)',
+              border: '1px solid rgba(0, 242, 254, 0.25)',
+              borderRadius: '10px',
+              padding: '14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>本机 6 位专属短码</span>
+                <span style={{ fontSize: '15px', fontWeight: 800, color: '#00f2fe', letterSpacing: '1px' }}>
+                  {stunInfo.short_code || '生成中...'}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>公网反射 IP 与端口</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: '#f8fafc' }}>
+                    {stunInfo.public_ip ? `${stunInfo.public_ip}:${stunInfo.public_port}` : '探测中...'}
+                  </span>
+                  {stunInfo.public_ip && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '1px 6px', fontSize: '9px' }}
+                      onClick={() => {
+                        navigator.clipboard.writeText(`${stunInfo.public_ip}:${stunInfo.public_port}`);
+                        showToast('已复制公网直连地址');
+                      }}
+                    >
+                      复制
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>NAT 锥形类型</span>
+                <span style={{ fontSize: '11px', color: '#10b981', fontWeight: 600 }}>
+                  {stunInfo.nat_type || '正在探测...'}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '3px 10px', fontSize: '10px' }}
+                  onClick={handleRefreshSTUN}
+                >
+                  🔄 重新探测 STUN
+                </button>
+              </div>
+            </div>
+
+            {/* 发起公网直连 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 600 }}>⚡ 跨公网打洞直连 (TLS 1.3 端到端加密)</div>
+              <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                输入远端节点的公网 IP:Port，打通跨网段零中继通道
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  className="form-input"
+                  style={{ flex: 1, fontSize: '12px' }}
+                  placeholder="例如: 114.248.12.34:9988"
+                  value={wanInputAddr}
+                  onChange={(e) => setWanInputAddr(e.target.value)}
+                />
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '6px 14px', fontSize: '12px', whiteSpace: 'nowrap' }}
+                  disabled={wanConnecting}
+                  onClick={handleConnectWAN}
+                >
+                  {wanConnecting ? '打洞中...' : '⚡ 发起直连'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="toast-bar">

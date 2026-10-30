@@ -173,6 +173,47 @@ export class PendingFileRequest {
     }
 }
 
+export class STUNInfo {
+    "public_ip": string;
+    "public_port": number;
+    "short_code": string;
+
+    /**
+     * "online", "probing", "failed"
+     */
+    "status": string;
+    "nat_type": string;
+
+    /** Creates a new STUNInfo instance. */
+    constructor($$source: Partial<STUNInfo> = {}) {
+        if (!("public_ip" in $$source)) {
+            this["public_ip"] = "";
+        }
+        if (!("public_port" in $$source)) {
+            this["public_port"] = 0;
+        }
+        if (!("short_code" in $$source)) {
+            this["short_code"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("nat_type" in $$source)) {
+            this["nat_type"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new STUNInfo instance from a string or object.
+     */
+    static createFrom($$source: any = {}): STUNInfo {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new STUNInfo($$parsedSource as Partial<STUNInfo>);
+    }
+}
+
 export class ServiceStatus {
     "device_name": string;
     "is_broadcasting": boolean;
@@ -244,6 +285,71 @@ export class TransferProgress {
     static createFrom($$source: any = {}): TransferProgress {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new TransferProgress($$parsedSource as Partial<TransferProgress>);
+    }
+}
+
+export class TransferRecord {
+    "id": string;
+    "stream_id": number;
+    "filename": string;
+    "file_size": number;
+    "sender_name": string;
+    "is_folder": boolean;
+    "save_path": string;
+
+    /**
+     * "send" or "receive"
+     */
+    "direction": string;
+
+    /**
+     * "completed" or "failed"
+     */
+    "status": string;
+    "timestamp": string;
+
+    /** Creates a new TransferRecord instance. */
+    constructor($$source: Partial<TransferRecord> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("stream_id" in $$source)) {
+            this["stream_id"] = 0;
+        }
+        if (!("filename" in $$source)) {
+            this["filename"] = "";
+        }
+        if (!("file_size" in $$source)) {
+            this["file_size"] = 0;
+        }
+        if (!("sender_name" in $$source)) {
+            this["sender_name"] = "";
+        }
+        if (!("is_folder" in $$source)) {
+            this["is_folder"] = false;
+        }
+        if (!("save_path" in $$source)) {
+            this["save_path"] = "";
+        }
+        if (!("direction" in $$source)) {
+            this["direction"] = "";
+        }
+        if (!("status" in $$source)) {
+            this["status"] = "";
+        }
+        if (!("timestamp" in $$source)) {
+            this["timestamp"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransferRecord instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TransferRecord {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TransferRecord($$parsedSource as Partial<TransferRecord>);
     }
 }
 

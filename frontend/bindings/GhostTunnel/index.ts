@@ -11,6 +11,8 @@ export {
     Config,
     PeerInfo,
     PendingFileRequest,
+    STUNInfo,
     ServiceStatus,
-    TransferProgress
+    TransferProgress,
+    TransferRecord
 } from "./models.js";

@@ -23,6 +23,20 @@ export function ChooseSaveDirectory(): $CancellablePromise<string> {
     return $Call.ByID(2159019050);
 }
 
+/**
+ * 供前端调用的 RPC：清空本地历史
+ */
+export function ClearTransferHistory(): $CancellablePromise<void> {
+    return $Call.ByID(769905161);
+}
+
+/**
+ * 供前端调用的 RPC：通过公网 IP:Port 或短码直连远端节点
+ */
+export function ConnectWAN(remoteAddr: string): $CancellablePromise<void> {
+    return $Call.ByID(4059720383, remoteAddr);
+}
+
 export function GetConfig(): $CancellablePromise<$models.Config> {
     return $Call.ByID(1375585559).then(($result: any) => {
         return $$createType0($result);
@@ -38,9 +52,27 @@ export function GetPeers(): $CancellablePromise<$models.PeerInfo[]> {
     });
 }
 
+/**
+ * 供前端调用的 RPC：获取公网 STUN 反射映射与 NAT 类型
+ */
+export function GetSTUNInfo(): $CancellablePromise<$models.STUNInfo> {
+    return $Call.ByID(2407911465).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
 export function GetStatus(): $CancellablePromise<$models.ServiceStatus> {
     return $Call.ByID(935029663).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType4($result);
+    });
+}
+
+/**
+ * 供前端调用的 RPC：获取本地持久化传输历史
+ */
+export function GetTransferHistory(): $CancellablePromise<$models.TransferRecord[]> {
+    return $Call.ByID(3007586622).then(($result: any) => {
+        return $$createType6($result);
     });
 }
 
@@ -49,7 +81,7 @@ export function GetStatus(): $CancellablePromise<$models.ServiceStatus> {
  */
 export function GetTrustedSenders(): $CancellablePromise<{ [_ in string]?: string }> {
     return $Call.ByID(1153814018).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType7($result);
     });
 }
 
@@ -65,10 +97,26 @@ export function OpenDropzoneWindow(): $CancellablePromise<void> {
 }
 
 /**
+ * 供前端调用的 RPC：在系统文件管理器 (Finder) 中高亮定位文件
+ */
+export function OpenFileLocation(targetPath: string): $CancellablePromise<void> {
+    return $Call.ByID(4161334082, targetPath);
+}
+
+/**
  * 供前端调用的多开窗口 RPC：为指定节点单独开辟一个独立的悬浮小窗口
  */
 export function OpenPeerWindow(instance: string, ip: string, port: number): $CancellablePromise<void> {
     return $Call.ByID(2217738199, instance, ip, port);
+}
+
+/**
+ * 供前端调用的 RPC：手动触发重新探测 STUN
+ */
+export function RefreshSTUN(): $CancellablePromise<$models.STUNInfo> {
+    return $Call.ByID(268661694).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
@@ -163,5 +211,8 @@ export function ToggleNotificationCard(): $CancellablePromise<void> {
 const $$createType0 = $models.Config.createFrom;
 const $$createType1 = $models.PeerInfo.createFrom;
 const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = $models.ServiceStatus.createFrom;
-const $$createType4 = $Create.Map($Create.Any, $Create.Any);
+const $$createType3 = $models.STUNInfo.createFrom;
+const $$createType4 = $models.ServiceStatus.createFrom;
+const $$createType5 = $models.TransferRecord.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = $Create.Map($Create.Any, $Create.Any);

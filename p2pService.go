@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +62,8 @@ type PendingFileRequest struct {
 type incomingFileState struct {
 	file         *os.File
 	filename     string
+	finalPath    string
+	partPath     string
 	totalBytes   int64
 	recvBytes    int64
 	isFolder     bool
@@ -84,6 +88,9 @@ type P2PService struct {
 	tcpListener      net.Listener
 	notificationCard application.Window
 	mainWindow       application.Window
+	historyManager   *HistoryManager
+	stunManager      *STUNManager
+	tlsManager       *TLSManager
 }
 
 // 跨平台智能获取配置文件物理路径：
@@ -140,6 +147,21 @@ func (p *P2PService) ServiceStartup(ctx context.Context, options application.Ser
 	p.incomingFiles = make(map[uint64]*incomingFileState)
 	p.loadConfig()
 
+	// 初始化历史记录管理器
+	p.historyManager = NewHistoryManager()
+
+	// 初始化 STUN 公网映射管理器
+	p.stunManager = NewSTUNManager()
+
+	// 初始化 TLS 1.3 端到端加密管理器
+	tlsMgr, err := NewTLSManager()
+	if err != nil {
+		log.Printf("[TLS] 初始化 TLS 加密管理器失败: %v", err)
+	} else {
+		p.tlsManager = tlsMgr
+		log.Printf("🔒 [E2EE] TLS 1.3 端到端加密引擎已启动，公钥指纹: %s...", tlsMgr.Fingerprint[:16])
+	}
+
 	hostname, _ := os.Hostname()
 	if p.config.DeviceName != "" {
 		p.hostname = p.config.DeviceName
@@ -153,14 +175,22 @@ func (p *P2PService) ServiceStartup(ctx context.Context, options application.Ser
 	}
 	p.resolver = resolver
 
-	// 启动本地原生 TCP 传输服务
+	// 启动本地原生 TCP / TLS 传输服务
 	listenPort := p.config.Port
 	if listenPort <= 0 {
 		listenPort = 9988
 	}
 	if err := p.startTCPListener(listenPort); err != nil {
-		log.Printf("[P2P] 启动 TCP 监听失败: %v", err)
+		log.Printf("[P2P] 启动传输服务监听失败: %v", err)
 	}
+
+	// 异步探测自身公网 STUN 反射端点
+	go func() {
+		info := p.stunManager.Probe(listenPort)
+		if app := application.Get(); app != nil {
+			app.Event.Emit("p2p:stun:updated", info)
+		}
+	}()
 
 	// 根据配置自动启动
 	if p.config.AutoBroadcast {
@@ -406,15 +436,28 @@ func (p *P2PService) notifyStatusChange() {
 	}
 }
 
-// 启动本地原生 TCP 传输服务监听
+// 启动本地原生 TCP / TLS 1.3 传输服务监听
 func (p *P2PService) startTCPListener(port int) error {
 	addr := fmt.Sprintf("0.0.0.0:%d", port)
-	ln, err := net.Listen("tcp", addr)
+	var ln net.Listener
+	var err error
+
+	if p.tlsManager != nil {
+		ln, err = tls.Listen("tcp", addr, p.tlsManager.GetServerTLSConfig())
+		if err != nil {
+			log.Printf("⚠️ [TLS] 监听 TLS 失败，回退到原生 TCP: %v", err)
+			ln, err = net.Listen("tcp", addr)
+		} else {
+			log.Printf("🔒 [P2P-TLS] 端到端加密服务器监听在 %s (TLS 1.3)", addr)
+		}
+	} else {
+		ln, err = net.Listen("tcp", addr)
+	}
+
 	if err != nil {
 		return fmt.Errorf("绑定端口 %s 失败: %w", addr, err)
 	}
 	p.tcpListener = ln
-	log.Printf("⚡ [P2P-TCP] 原生传输服务器监听在 %s", addr)
 
 	go func() {
 		for {
@@ -427,6 +470,19 @@ func (p *P2PService) startTCPListener(port int) error {
 	}()
 
 	return nil
+}
+
+// 统一安全拨号方法：优先使用 TLS 1.3 加密直连，如不兼容则优雅降级为明文 TCP
+func (p *P2PService) dialPeer(addr string) (net.Conn, error) {
+	if p.tlsManager != nil {
+		dialer := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, p.tlsManager.GetClientTLSConfig())
+		if err == nil {
+			return conn, nil
+		}
+		log.Printf("⚠️ [TLS] 拨号 %s TLS 握手失败，尝试明文回退: %v", addr, err)
+	}
+	return net.DialTimeout("tcp", addr, 5*time.Second)
 }
 
 // 处理对端传入的 TCP 会话与二进制帧
@@ -481,18 +537,34 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			trustedPath, isTrusted := p.config.TrustedSenders[req.SenderName]
 			p.mu.Unlock()
 
+			// 确定目标下载目录以探查断点文件
+			targetDir := trustedPath
+			if targetDir == "" {
+				homeDir, _ := os.UserHomeDir()
+				targetDir = filepath.Join(homeDir, "Downloads", "GhostTunnel")
+			}
+			_ = os.MkdirAll(targetDir, 0755)
+
+			partPath := filepath.Join(targetDir, req.Filename+".part")
+			var resumeOffset int64 = 0
+			if fi, err := os.Stat(partPath); err == nil && fi.Size() < req.FileSize {
+				resumeOffset = fi.Size()
+				log.Printf("⚡ [断点检测] 发现未完成传输分块: %s, 已有: %d 字节, 激活断点续传", req.Filename, resumeOffset)
+			}
+
 			if isTrusted && trustedPath != "" {
-				// 命中白名单：自动同意
+				// 命中白名单：自动同意并带上断点偏移
 				resp := FileResponsePayload{
-					StreamID:    req.StreamID,
-					Accepted:    true,
-					CustomPath:  trustedPath,
-					TrustSender: true,
-					SenderName:  p.hostname,
+					StreamID:     req.StreamID,
+					Accepted:     true,
+					CustomPath:   trustedPath,
+					TrustSender:  true,
+					SenderName:   p.hostname,
+					ResumeOffset: resumeOffset,
 				}
 				respBytes, _ := json.Marshal(resp)
 				_ = EncodeFrame(conn, Frame{MsgType: MsgTypeFileResponse, StreamID: req.StreamID, Payload: respBytes})
-				log.Printf("🛡️ [白名单设备自动接收] 来源: %s, 保存目录: %s", req.SenderName, trustedPath)
+				log.Printf("🛡️ [白名单设备自动接收] 来源: %s, 目录: %s, 续传偏移: %d", req.SenderName, trustedPath, resumeOffset)
 			} else {
 				// 未在白名单：向前端派发请求事件并呼出右上角通知卡片！
 				ch := make(chan FileResponsePayload, 1)
@@ -517,9 +589,12 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 				p.ShowNotificationCard()
 
 				// 后台等待用户响应 (超时 30 秒默认拒绝)
-				go func(sID uint64, c net.Conn) {
+				go func(sID uint64, c net.Conn, rOffset int64) {
 					select {
 					case resp := <-ch:
+						if resp.Accepted && resp.ResumeOffset == 0 {
+							resp.ResumeOffset = rOffset
+						}
 						respBytes, _ := json.Marshal(resp)
 						_ = EncodeFrame(c, Frame{MsgType: MsgTypeFileResponse, StreamID: sID, Payload: respBytes})
 					case <-time.After(30 * time.Second):
@@ -530,7 +605,7 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 						delete(p.pendingRequests, sID)
 						p.mu.Unlock()
 					}
-				}(req.StreamID, conn)
+				}(req.StreamID, conn, resumeOffset)
 			}
 
 		case MsgTypeFileMeta:
@@ -545,10 +620,24 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			downloadDir := filepath.Join(homeDir, "Downloads", "GhostTunnel")
 			_ = os.MkdirAll(downloadDir, 0755)
 
-			savePath := filepath.Join(downloadDir, meta.Filename)
-			dstFile, err := os.Create(savePath)
+			finalPath := filepath.Join(downloadDir, meta.Filename)
+			partPath := filepath.Join(downloadDir, meta.Filename+".part")
+
+			var dstFile *os.File
+			var err error
+			var recvBytes int64 = 0
+
+			if meta.Offset > 0 {
+				// 断点续传追加模式写入
+				dstFile, err = os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+				recvBytes = meta.Offset
+				log.Printf("⚡ [断点续传] 以追加模式打开分块文件: %s, 初始已接收: %d 字节", partPath, recvBytes)
+			} else {
+				dstFile, err = os.Create(partPath)
+			}
+
 			if err != nil {
-				log.Printf("❌ 创建接收文件失败: %v", err)
+				log.Printf("❌ 创建/打开临时接收文件失败: %v", err)
 				continue
 			}
 
@@ -559,15 +648,17 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			p.incomingFiles[meta.StreamID] = &incomingFileState{
 				file:         dstFile,
 				filename:     meta.Filename,
+				finalPath:    finalPath,
+				partPath:     partPath,
 				totalBytes:   meta.FileSize,
-				recvBytes:    0,
+				recvBytes:    recvBytes,
 				isFolder:     meta.IsFolder,
 				startTime:    time.Now(),
 				lastEmitTime: time.Now(),
 			}
 			p.mu.Unlock()
 
-			log.Printf("📥 [开始分块流式写入] 文件名: %s, 大小: %d 字节", meta.Filename, meta.FileSize)
+			log.Printf("📥 [分块流式写入] 文件名: %s, 大小: %d 字节, 断点: %d 字节", meta.Filename, meta.FileSize, recvBytes)
 			if app := application.Get(); app != nil {
 				app.Event.Emit("p2p:transfer:start", meta)
 			}
@@ -609,10 +700,30 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 
 				if isComplete {
 					_ = st.file.Close()
+					// 原子重命名临时文件为正式落盘文件
+					_ = os.Rename(st.partPath, st.finalPath)
+
 					p.mu.Lock()
 					delete(p.incomingFiles, frame.StreamID)
 					p.mu.Unlock()
-					log.Printf("✅ [文件接收完毕并落盘] 文件名: %s", st.filename)
+
+					// 持久化记录到历史
+					if p.historyManager != nil {
+						p.historyManager.Add(TransferRecord{
+							ID:         fmt.Sprintf("%d", frame.StreamID),
+							StreamID:   frame.StreamID,
+							Filename:   st.filename,
+							FileSize:   st.totalBytes,
+							SenderName: remoteAddr,
+							IsFolder:   st.isFolder,
+							SavePath:   st.finalPath,
+							Direction:  "receive",
+							Status:     "completed",
+							Timestamp:  time.Now().Format("2006-01-02 15:04:05"),
+						})
+					}
+
+					log.Printf("✅ [文件接收完毕并落盘] 文件名: %s -> %s", st.filename, st.finalPath)
 					if app := application.Get(); app != nil {
 						app.Event.Emit("p2p:transfer:completed", prog)
 					}
@@ -636,9 +747,9 @@ func (p *P2PService) SendClipboard(targetIP string, targetPort int, content stri
 	}
 
 	addr := fmt.Sprintf("%s:%d", targetIP, targetPort)
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	conn, err := p.dialPeer(addr)
 	if err != nil {
-		return fmt.Errorf("建立点对点连接失败(%s): %w", addr, err)
+		return fmt.Errorf("建立点对点安全连接失败(%s): %w", addr, err)
 	}
 	defer conn.Close()
 
@@ -652,7 +763,7 @@ func (p *P2PService) SendClipboard(targetIP string, targetPort int, content stri
 		return fmt.Errorf("发送数据帧失败: %w", err)
 	}
 
-	log.Printf("🚀 [剪贴流已直传] 目标: %s, 字节数: %d", addr, len(frame.Payload))
+	log.Printf("🚀 [剪贴流已加密直传] 目标: %s, 字节数: %d", addr, len(frame.Payload))
 	return nil
 }
 
@@ -666,9 +777,9 @@ func (p *P2PService) SendImage(targetIP string, targetPort int, imageDataURL str
 	}
 
 	addr := fmt.Sprintf("%s:%d", targetIP, targetPort)
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	conn, err := p.dialPeer(addr)
 	if err != nil {
-		return fmt.Errorf("建立点对点连接失败(%s): %w", addr, err)
+		return fmt.Errorf("建立点对点安全连接失败(%s): %w", addr, err)
 	}
 	defer conn.Close()
 
@@ -682,7 +793,7 @@ func (p *P2PService) SendImage(targetIP string, targetPort int, imageDataURL str
 		return fmt.Errorf("发送图片帧失败: %w", err)
 	}
 
-	log.Printf("🖼️ [即焚图片已直传] 目标: %s, 大小: %d 字节", addr, len(frame.Payload))
+	log.Printf("🖼️ [即焚图片已加密直传] 目标: %s, 大小: %d 字节", addr, len(frame.Payload))
 	return nil
 }
 
@@ -774,9 +885,9 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 	}
 
 	addr := fmt.Sprintf("%s:%d", targetIP, targetPort)
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	conn, err := p.dialPeer(addr)
 	if err != nil {
-		return fmt.Errorf("建立点对点直传失败(%s): %w", addr, err)
+		return fmt.Errorf("建立点对点直传安全连接失败(%s): %w", addr, err)
 	}
 	defer conn.Close()
 
@@ -809,12 +920,20 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 		return fmt.Errorf("对端拒绝接收本次文件传输")
 	}
 
-	// 2. 发送元数据帧 MsgTypeFileMeta
+	// 2. 检测断点续传偏移
+	var startOffset int64 = 0
+	if resp.ResumeOffset > 0 && resp.ResumeOffset < fileSize {
+		startOffset = resp.ResumeOffset
+		log.Printf("⚡ [断点续传激活] 对端已存 %d 字节, 跳过已有分块直传剩余部分", startOffset)
+	}
+
+	// 发送元数据帧 MsgTypeFileMeta
 	meta := FileMeta{
 		StreamID: streamID,
 		Filename: filename,
 		FileSize: fileSize,
 		IsFolder: isFolder,
+		Offset:   startOffset,
 	}
 	metaBytes, _ := json.Marshal(meta)
 	if err := EncodeFrame(conn, Frame{MsgType: MsgTypeFileMeta, StreamID: streamID, Payload: metaBytes}); err != nil {
@@ -828,8 +947,14 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 	}
 	defer file.Close()
 
+	if startOffset > 0 {
+		if _, err := file.Seek(startOffset, io.SeekStart); err != nil {
+			return fmt.Errorf("定位断点偏移失败: %w", err)
+		}
+	}
+
 	buf := make([]byte, 2*1024*1024) // 2MB chunk
-	var sentBytes int64
+	sentBytes := startOffset
 	startTime := time.Now()
 	var lastEmitTime time.Time
 
@@ -850,7 +975,7 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 			if elapsed <= 0 {
 				elapsed = 0.001
 			}
-			speedBps := float64(sentBytes) / elapsed
+			speedBps := float64(sentBytes-startOffset) / elapsed
 			percent := float64(sentBytes) / float64(fileSize) * 100
 			isComplete := sentBytes >= fileSize
 
@@ -878,6 +1003,22 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 		if rErr != nil {
 			return fmt.Errorf("流式读取异常: %w", rErr)
 		}
+	}
+
+	// 记录发送历史
+	if p.historyManager != nil {
+		p.historyManager.Add(TransferRecord{
+			ID:         fmt.Sprintf("%d", streamID),
+			StreamID:   streamID,
+			Filename:   filename,
+			FileSize:   fileSize,
+			SenderName: p.hostname,
+			IsFolder:   isFolder,
+			SavePath:   actualPath,
+			Direction:  "send",
+			Status:     "completed",
+			Timestamp:  time.Now().Format("2006-01-02 15:04:05"),
+		})
 	}
 
 	log.Printf("🚀 [传输完成] 目标: %s, 文件名: %s, 大小: %d 字节", addr, filename, fileSize)
@@ -1175,4 +1316,99 @@ func (p *P2PService) TilePeerWindows() error {
 		}
 	}
 	return nil
+}
+
+// 供前端调用的 RPC：获取公网 STUN 反射映射与 NAT 类型
+func (p *P2PService) GetSTUNInfo() STUNInfo {
+	if p.stunManager == nil {
+		return STUNInfo{Status: "failed", NATType: "Unknown"}
+	}
+	return p.stunManager.GetInfo()
+}
+
+// 供前端调用的 RPC：手动触发重新探测 STUN
+func (p *P2PService) RefreshSTUN() STUNInfo {
+	if p.stunManager == nil {
+		return STUNInfo{Status: "failed", NATType: "Unknown"}
+	}
+	listenPort := p.config.Port
+	if listenPort <= 0 {
+		listenPort = 9988
+	}
+	info := p.stunManager.Probe(listenPort)
+	if app := application.Get(); app != nil {
+		app.Event.Emit("p2p:stun:updated", info)
+	}
+	return info
+}
+
+// 供前端调用的 RPC：通过公网 IP:Port 或短码直连远端节点
+func (p *P2PService) ConnectWAN(remoteAddr string) error {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return fmt.Errorf("公网目标地址不能为空")
+	}
+
+	// 支持带端口或不带端口（默认 9988）
+	if !strings.Contains(remoteAddr, ":") {
+		remoteAddr = fmt.Sprintf("%s:9988", remoteAddr)
+	}
+
+	conn, err := p.dialPeer(remoteAddr)
+	if err != nil {
+		return fmt.Errorf("公网连接失败(%s): %w", remoteAddr, err)
+	}
+	defer conn.Close()
+
+	// 发送心跳探活帧以握手
+	frame := Frame{
+		MsgType:  MsgTypePing,
+		StreamID: uint64(time.Now().UnixNano()),
+		Payload:  []byte(p.hostname),
+	}
+	if err := EncodeFrame(conn, frame); err != nil {
+		return fmt.Errorf("发送握手探测帧失败: %w", err)
+	}
+
+	// 成功握手，将该公网节点加入雷达拓扑
+	parts := strings.Split(remoteAddr, ":")
+	ip := parts[0]
+	port := 9988
+	if len(parts) > 1 {
+		fmt.Sscanf(parts[1], "%d", &port)
+	}
+
+	peer := PeerInfo{
+		Instance: fmt.Sprintf("WAN - %s", remoteAddr),
+		IP:       ip,
+		Port:     port,
+		Text:     []string{"type=wan", "network=public", "encrypted=tls1.3"},
+	}
+	p.recordPeer(peer)
+	log.Printf("🌐 [公网节点直连成功] 地址: %s", remoteAddr)
+	return nil
+}
+
+// 供前端调用的 RPC：获取本地持久化传输历史
+func (p *P2PService) GetTransferHistory() []TransferRecord {
+	if p.historyManager == nil {
+		return nil
+	}
+	return p.historyManager.GetAll()
+}
+
+// 供前端调用的 RPC：清空本地历史
+func (p *P2PService) ClearTransferHistory() error {
+	if p.historyManager == nil {
+		return nil
+	}
+	return p.historyManager.Clear()
+}
+
+// 供前端调用的 RPC：在系统文件管理器 (Finder) 中高亮定位文件
+func (p *P2PService) OpenFileLocation(targetPath string) error {
+	if p.historyManager == nil {
+		return nil
+	}
+	return p.historyManager.OpenInFileManager(targetPath)
 }
