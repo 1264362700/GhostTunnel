@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GhostTunnel UI 原型预览</title>
+  <style>
+    :root {
+      --bg: #090a0f;
+      --card-bg: rgba(18, 22, 34, 0.7);
+      --border: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(0, 242, 254, 0.3);
+      --accent: #00f2fe;
+      --accent-alt: #4facfe;
+      --text: #f0f4f8;
+      --text-dim: #8a99ad;
+      --success: #00f2fe;
+      --danger: #ff0055;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+      background: radial-gradient(circle at 50% 20%, #151c2e 0%, #090a0f 80%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+
+    /* 顶部导航与状态栏 */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .brand-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-alt));
+      box-shadow: 0 0 16px var(--border-glow);
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      background: rgba(0, 242, 254, 0.1);
+      border: 1px solid var(--border-glow);
+      font-size: 12px;
+      color: var(--accent);
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    /* 主网格布局 */
+    .container {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 20px;
+      padding: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+      flex: 1;
+      width: 100%;
+    }
+
+    /* 左侧：雷达与节点探测面板 */
+    .panel {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+    }
+    .panel-title {
+      font-size: 14px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* 雷达圆环视觉 */
+    .radar-box {
+      width: 100%;
+      height: 220px;
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    .radar-ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 242, 254, 0.15);
+    }
+    .r1 { width: 60px; height: 60px; }
+    .r2 { width: 130px; height: 130px; }
+    .r3 { width: 200px; height: 200px; }
+    .radar-scanner {
+      position: absolute;
+      width: 200px;
+      height: 200px;
+      border-radius: 50%;
+      background: conic-gradient(from 0deg, rgba(0, 242, 254, 0.25) 0deg, transparent 60deg);
+      animation: rotateScanner 4s linear infinite;
+    }
+    @keyframes rotateScanner {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .radar-center {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 12px var(--accent);
+      z-index: 2;
+    }
+
+    /* 对等节点列表 */
+    .peer-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+    }
+    .peer-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .peer-item:hover, .peer-item.active {
+      border-color: var(--border-glow);
+      background: rgba(0, 242, 254, 0.08);
+      transform: translateY(-1px);
+    }
+    .peer-name {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .peer-ip {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+    .btn-connect {
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-connect:hover {
+      background: var(--accent);
+      color: #000;
+    }
+
+    /* 右侧：操作主舞台 */
+    .main-stage {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* 拖拽传输区 */
+    .dropzone {
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 16px;
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      background: rgba(255, 255, 255, 0.01);
+    }
+    .dropzone:hover {
+      border-color: var(--accent);
+      background: rgba(0, 242, 254, 0.03);
+      box-shadow: 0 0 24px rgba(0, 242, 254, 0.1);
+    }
+    .drop-icon {
+      font-size: 32px;
+      margin-bottom: 8px;
+    }
+    .drop-hint {
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    /* 传输中卡片 */
+    .transfer-progress {
+      padding: 16px;
+      background: rgba(255, 255, 255, 0.02);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .progress-bar-bg {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      width: 68%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-alt));
+      box-shadow: 0 0 10px var(--accent);
+      transition: width 0.3s ease;
+    }
+
+    /* 即焚剪贴板卡片 */
+    .clip-box {
+      display: flex;
+      gap: 12px;
+    }
+    .clip-input {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: #fff;
+      outline: none;
+      font-size: 13px;
+    }
+    .clip-input:focus {
+      border-color: var(--accent);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-alt));
+      border: none;
+      color: #000;
+      font-weight: 600;
+      padding: 0 18px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部状态栏 -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon"></div>
+      <span>GhostTunnel <span style="font-weight:300; font-size:13px; color:var(--text-dim);">P2P Node v0.1</span></span>
+    </div>
+    <div class="status-badge">
+      <span class="status-dot"></span>
+      <span>端对端加密隧道准备就绪 (mDNS 监听中)</span>
+    </div>
+  </header>
+
+  <!-- 核心交互区 -->
+  <div class="container">
+    <!-- 左侧设备雷达 -->
+    <div class="panel">
+      <div class="panel-title">
+        <span>对等设备雷达</span>
+        <span style="font-size:11px; color:var(--accent);">自动扫描中</span>
+      </div>
+
+      <div class="radar-box">
+        <div class="radar-scanner"></div>
+        <div class="radar-ring r1"></div>
+        <div class="radar-ring r2"></div>
+        <div class="radar-ring r3"></div>
+        <div class="radar-center"></div>
+      </div>
+
+      <div class="panel-title" style="margin-top:10px;">发现的节点 (2)</div>
+      <div class="peer-list">
+        <div class="peer-item active">
+          <div>
+            <div class="peer-name">💻 MacBook Pro 16 (本地局域网)</div>
+            <div class="peer-ip">192.168.1.108 · 延迟 2ms</div>
+          </div>
+          <button class="btn-connect">已连接</button>
+        </div>
+        <div class="peer-item">
+          <div>
+            <div class="peer-name">🖥️ Studio Workstation</div>
+            <div class="peer-ip">192.168.1.115 · 待握手</div>
+          </div>
+          <button class="btn-connect">连接</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧内容主屏 -->
+    <div class="main-stage">
+      <!-- 拖拽传输 -->
+      <div class="panel">
+        <div class="panel-title">
+          <span>光速文件瞬移 (零中继·跑满带宽)</span>
+          <span style="color:var(--text-dim); font-size:12px;">直接打入对端磁盘</span>
+        </div>
+
+        <div class="dropzone">
+          <div class="drop-icon">⚡</div>
+          <div style="font-weight:600; margin-bottom:4px;">将任意大文件、视频、文件夹拖拽至此</div>
+          <div class="drop-hint">基于 Go 零拷贝流多路复用，自动分块并发传输</div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <div class="transfer-progress">
+            <div class="progress-header">
+              <span>Docker_Image_Backup.tar (4.8 GB)</span>
+              <span style="color:var(--accent); font-weight:600;">88.4 MB/s · 68%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 即焚剪贴流 -->
+      <div class="panel">
+        <div class="panel-title">
+          <span>加密剪贴流 (阅后即焚)</span>
+          <span style="font-size:12px; color:var(--text-dim);">内存直达 · 不落盘</span>
+        </div>
+        <div class="clip-box">
+          <input class="clip-input" placeholder="输入敏感密码、密钥或代码片段，点击秒推到对方剪贴板..." value="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForDemonstration"/>
+          <button class="btn-primary">同步发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

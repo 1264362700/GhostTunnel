@@ -1,0 +1,8 @@
+{
+  "device_name": "",
+  "service_type": "_ghosttunnel._tcp",
+  "port": 9988,
+  "domain": "local.",
+  "auto_broadcast": true,
+  "auto_discovery": true
+}
