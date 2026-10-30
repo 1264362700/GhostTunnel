@@ -39,7 +39,7 @@ export function HideNotch(): $CancellablePromise<void> {
 }
 
 /**
- * 打开桌面边缘极简吸附悬浮球
+ * 打开桌面边缘极简吸附悬浮球 (满血版：支持原生文件/文件夹拖拽 & 鼠标拖动 & 双击呼出)
  */
 export function OpenDropzoneWindow(): $CancellablePromise<void> {
     return $Call.ByID(872042092);
@@ -57,10 +57,31 @@ export function SaveConfig(cfg: $models.Config): $CancellablePromise<void> {
 }
 
 /**
+ * 供前端一键拉起原生操作系统文件选择器
+ */
+export function SelectAndSendFile(targetIP: string, targetPort: number): $CancellablePromise<void> {
+    return $Call.ByID(780815764, targetIP, targetPort);
+}
+
+/**
+ * 供前端一键拉起原生操作系统文件夹选择器 (自动 zip 压缩并直传)
+ */
+export function SelectAndSendFolder(targetIP: string, targetPort: number): $CancellablePromise<void> {
+    return $Call.ByID(1050901434, targetIP, targetPort);
+}
+
+/**
  * 供前端调用的 RPC：向指定节点即时发送剪贴板/文本数据帧
  */
 export function SendClipboard(targetIP: string, targetPort: number, content: string): $CancellablePromise<void> {
     return $Call.ByID(539364681, targetIP, targetPort, content);
+}
+
+/**
+ * 供前端/拖拽直接调用的文件与文件夹发送核心方法 (大文件流式管道分块直传，避免 OOM)
+ */
+export function SendFileOrFolder(targetIP: string, targetPort: number, localPath: string): $CancellablePromise<void> {
+    return $Call.ByID(1420938898, targetIP, targetPort, localPath);
 }
 
 /**
@@ -72,6 +93,10 @@ export function SendImage(targetIP: string, targetPort: number, imageDataURL: st
 
 export function SetNotchWindow(nw: application$0.NotchWindow | null): $CancellablePromise<void> {
     return $Call.ByID(1648709797, nw);
+}
+
+export function ShowMainWindow(): $CancellablePromise<void> {
+    return $Call.ByID(1928549015);
 }
 
 export function ShowNotch(): $CancellablePromise<void> {

@@ -24,6 +24,16 @@ export const P2pPeerFound = "p2p:peer:found";
 export const P2pStatusChange = "p2p:status:change";
 
 /**
+ * Name of the custom event "p2p:transfer:completed".
+ */
+export const P2pTransferCompleted = "p2p:transfer:completed";
+
+/**
+ * Name of the custom event "p2p:transfer:progress".
+ */
+export const P2pTransferProgress = "p2p:transfer:progress";
+
+/**
  * Name of the custom event "time".
  */
 export const Time = "time";

@@ -15,6 +15,8 @@ function configure() {
         "p2p:clipboard:received": $$createType0,
         "p2p:peer:found": $$createType1,
         "p2p:status:change": $$createType2,
+        "p2p:transfer:completed": $$createType3,
+        "p2p:transfer:progress": $$createType3,
     }));
 }
 
@@ -22,5 +24,6 @@ function configure() {
 const $$createType0 = main$0.ClipboardMessage.createFrom;
 const $$createType1 = main$0.PeerInfo.createFrom;
 const $$createType2 = main$0.ServiceStatus.createFrom;
+const $$createType3 = main$0.TransferProgress.createFrom;
 
 configure();

@@ -20,6 +20,8 @@ func init() {
     application.RegisterEvent[PeerInfo]("p2p:peer:found")
     application.RegisterEvent[ServiceStatus]("p2p:status:change")
     application.RegisterEvent[ClipboardMessage]("p2p:clipboard:received")
+    application.RegisterEvent[TransferProgress]("p2p:transfer:progress")
+    application.RegisterEvent[TransferProgress]("p2p:transfer:completed")
 }
 
 // main function serves as the application's entry point. It initializes the application, creates a window,
@@ -43,10 +45,12 @@ func main() {
     })
 
     // 1. 创建主控制台窗口 (Main Dashboard Window)
-    app.Window.NewWithOptions(application.WebviewWindowOptions{
-        Title:  "GhostTunnel 控制中心",
-        Width:  1000,
-        Height: 618,
+    mainWindow := app.Window.NewWithOptions(application.WebviewWindowOptions{
+        Name:           "main-dashboard-window",
+        Title:          "GhostTunnel 控制中心",
+        Width:          1000,
+        Height:         618,
+        EnableFileDrop: true, // 开启原生拖拽
         Mac: application.MacWindow{
             InvisibleTitleBarHeight: 50,
             Backdrop:                application.MacBackdropTranslucent,
@@ -55,6 +59,7 @@ func main() {
         BackgroundColour: application.NewRGB(12, 14, 20),
         URL:              "/",
     })
+    p2pService.setMainWindow(mainWindow)
 
     // 2. 创建贴合 MacBook 顶部刘海的灵动胶囊窗口 (Notch Window)
     notchWindow := app.Window.NewNotchWindow(application.NotchWindowOptions{

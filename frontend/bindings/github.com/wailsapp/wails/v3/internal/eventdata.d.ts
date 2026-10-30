@@ -15,6 +15,8 @@ declare module "@wailsio/runtime" {
             "p2p:clipboard:received": main$0.ClipboardMessage;
             "p2p:peer:found": main$0.PeerInfo;
             "p2p:status:change": main$0.ServiceStatus;
+            "p2p:transfer:completed": main$0.TransferProgress;
+            "p2p:transfer:progress": main$0.TransferProgress;
             "time": string;
         }
     }

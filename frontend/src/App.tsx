@@ -7,6 +7,9 @@ import {
   GetPeers,
   SendClipboard,
   SendImage,
+  SelectAndSendFile,
+  SelectAndSendFolder,
+  ShowMainWindow,
   ToggleNotch,
   HideNotch,
   OpenPeerWindow,
@@ -17,7 +20,7 @@ import {
   StartDiscovery,
   StopDiscovery,
 } from '../bindings/GhostTunnel/p2pservice';
-import type { Config, PeerInfo, ServiceStatus, ClipboardMessage } from '../bindings/GhostTunnel/models';
+import type { Config, PeerInfo, ServiceStatus, ClipboardMessage, TransferProgress } from '../bindings/GhostTunnel/models';
 
 type TabType = 'radar' | 'transfers' | 'settings';
 
@@ -53,6 +56,9 @@ function App() {
   const [sendText, setSendText] = useState<string>('');
   const [pastedImage, setPastedImage] = useState<string | null>(null);
   const [receivedMessages, setReceivedMessages] = useState<ClipboardMessage[]>([]);
+
+  // 阶段三：文件与文件夹分块传输实时进度流
+  const [currentTransfer, setCurrentTransfer] = useState<TransferProgress | null>(null);
 
   // 刘海智能交互状态 (鼠标悬停驻留 & 倒计时自隐)
   const [notchHovered, setNotchHovered] = useState(false);
@@ -155,10 +161,27 @@ function App() {
       showToast(`📩 收到来自 ${msg.sender} 的即焚剪贴板！`);
     });
 
+    const unsubProg = Events.On('p2p:transfer:progress', (ev: any) => {
+      if (!ev || !ev.data) return;
+      const prog: TransferProgress = ev.data;
+      setCurrentTransfer(prog);
+      if (prog.is_complete) {
+        setTimeout(() => setCurrentTransfer(null), 3000);
+      }
+    });
+
+    const unsubComp = Events.On('p2p:transfer:completed', (ev: any) => {
+      if (!ev || !ev.data) return;
+      const prog: TransferProgress = ev.data;
+      showToast(`🎉 文件 [${prog.filename}] 接收完成！已保存至 Downloads/GhostTunnel`);
+    });
+
     return () => {
       unsubStatus();
       unsubPeer();
       unsubClip();
+      unsubProg();
+      unsubComp();
     };
   }, []);
 
@@ -543,15 +566,12 @@ function App() {
     );
   }
 
-  // ==================== 3. 桌面边缘吸附瞬移虫洞挂件 (Dropzone Bubble) ====================
+  // ==================== 3. 桌面边缘吸附瞬移虫洞挂件 (Dropzone Bubble - 满血修复) ====================
   if (viewMode === 'dropzone') {
     return (
       <div
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault();
-          showToast('🚀 文件已吸入虫洞，正向最近对端瞬移投递！');
-        }}
+        data-file-drop-target="true"
+        onDoubleClick={() => ShowMainWindow()}
         style={{
           width: '100vw',
           height: '100vh',
@@ -562,18 +582,27 @@ function App() {
           overflow: 'hidden',
           padding: '10px',
           boxSizing: 'border-box',
+          // @ts-ignore
+          WebkitAppRegion: 'drag',
         }}
       >
         <div
+          data-file-drop-target="true"
           className="wormhole-bubble"
-          title="双击唤醒主控台 · 支持直接拖入文件或按 Cmd+V 投递图片"
+          title="按住鼠标拖动位置 · 双击唤醒控制台 · 拖入文件/文件夹直接瞬移"
           style={{
-            width: '120px',
-            height: '120px',
+            width: '128px',
+            height: '128px',
             borderRadius: '50%',
-            background: 'radial-gradient(circle at 35% 35%, rgba(0, 242, 254, 0.35), rgba(7, 9, 14, 0.96))',
-            border: '1.5px solid rgba(0, 242, 254, 0.55)',
-            boxShadow: '0 0 30px rgba(0, 242, 254, 0.35), inset 0 0 25px rgba(0,0,0,0.9)',
+            background: currentTransfer
+              ? 'radial-gradient(circle at 35% 35%, rgba(0, 242, 254, 0.6), rgba(7, 9, 14, 0.98))'
+              : 'radial-gradient(circle at 35% 35%, rgba(0, 242, 254, 0.35), rgba(7, 9, 14, 0.96))',
+            border: currentTransfer
+              ? '2px solid #00f2fe'
+              : '1.5px solid rgba(0, 242, 254, 0.55)',
+            boxShadow: currentTransfer
+              ? '0 0 40px rgba(0, 242, 254, 0.8), inset 0 0 25px rgba(0,0,0,0.9)'
+              : '0 0 30px rgba(0, 242, 254, 0.35), inset 0 0 25px rgba(0,0,0,0.9)',
             backdropFilter: 'blur(20px)',
             display: 'flex',
             flexDirection: 'column',
@@ -582,11 +611,73 @@ function App() {
             color: '#fff',
             textAlign: 'center',
             transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+            cursor: 'grab',
           }}
         >
-          <div style={{ fontSize: '24px', filter: 'drop-shadow(0 0 8px #00f2fe)' }}>🌀</div>
-          <div style={{ fontSize: '11px', fontWeight: 800, color: '#00f2fe', letterSpacing: '0.5px', marginTop: '2px' }}>瞬移虫洞</div>
-          <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.6)' }}>拖入即焚</div>
+          {currentTransfer ? (
+            <div style={{ pointerEvents: 'none' }}>
+              <div style={{ fontSize: '18px', fontWeight: 800, color: '#00f2fe' }}>
+                {Math.round(currentTransfer.percent)}%
+              </div>
+              <div style={{ fontSize: '9px', color: '#94a3b8', marginTop: '2px' }}>
+                {(currentTransfer.speed_bps / 1024 / 1024).toFixed(1)} MB/s
+              </div>
+            </div>
+          ) : (
+            <div style={{ pointerEvents: 'none' }}>
+              <div style={{ fontSize: '26px', filter: 'drop-shadow(0 0 8px #00f2fe)' }}>🌀</div>
+              <div style={{ fontSize: '11px', fontWeight: 800, color: '#00f2fe', letterSpacing: '0.5px', marginTop: '2px' }}>瞬移虫洞</div>
+              <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.6)' }}>拖入即焚</div>
+            </div>
+          )}
+
+          {/* 快捷选文件微型把手 (禁止窗口拖拽以便点击) */}
+          <div
+            style={{
+              // @ts-ignore
+              WebkitAppRegion: 'no-drag',
+              display: 'flex',
+              gap: '6px',
+              marginTop: '4px',
+            }}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                SelectAndSendFile('127.0.0.1', 9988);
+              }}
+              style={{
+                background: 'rgba(255,255,255,0.08)',
+                border: 'none',
+                borderRadius: '4px',
+                color: '#00f2fe',
+                fontSize: '9px',
+                padding: '2px 5px',
+                cursor: 'pointer',
+              }}
+              title="选择单个文件发送"
+            >
+              📄
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                SelectAndSendFolder('127.0.0.1', 9988);
+              }}
+              style={{
+                background: 'rgba(255,255,255,0.08)',
+                border: 'none',
+                borderRadius: '4px',
+                color: '#00f2fe',
+                fontSize: '9px',
+                padding: '2px 5px',
+                cursor: 'pointer',
+              }}
+              title="选择文件夹自动压缩并发送"
+            >
+              📂
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -780,9 +871,45 @@ function App() {
 
           {activeTab === 'transfers' && (
             <div style={{ maxWidth: '780px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* 大文件/文件夹分块实时传输进度面板 */}
+              {currentTransfer && (
+                <div className="card-panel" style={{ border: '1px solid rgba(0, 242, 254, 0.45)', background: 'rgba(0, 242, 254, 0.05)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '16px' }}>⚡</span>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#00f2fe' }}>
+                          正在传输: {currentTransfer.filename}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                          {(currentTransfer.sent_bytes / 1024 / 1024).toFixed(2)} MB / {(currentTransfer.total_bytes / 1024 / 1024).toFixed(2)} MB
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '15px', fontWeight: 800, color: '#fff' }}>
+                        {Math.round(currentTransfer.percent)}%
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#00f2fe' }}>
+                        {(currentTransfer.speed_bps / 1024 / 1024).toFixed(1)} MB/s
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.08)', borderRadius: '3px', overflow: 'hidden', marginTop: '12px' }}>
+                    <div style={{
+                      height: '100%',
+                      background: 'linear-gradient(90deg, #00f2fe, #4facfe)',
+                      width: `${currentTransfer.percent}%`,
+                      transition: 'width 0.15s ease-out'
+                    }} />
+                  </div>
+                </div>
+              )}
+
               <div className="card-panel">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 600 }}>即焚剪贴流直传 (支持文本与截图)</span>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>即焚传输 (支持文本、截图、大文件与文件夹)</span>
                   <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                     目标节点: <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{selectedPeer?.instance || '未选择 (默认 127.0.0.1)'}</span>
                   </div>
@@ -824,7 +951,7 @@ function App() {
                 <textarea
                   style={{
                     width: '100%',
-                    height: '110px',
+                    height: '100px',
                     background: 'var(--bg-input)',
                     border: '1px solid var(--border)',
                     borderRadius: '8px',
@@ -840,10 +967,32 @@ function App() {
                   onChange={(e) => setSendText(e.target.value)}
                 />
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-                  <button className="btn btn-primary" onClick={() => handleSendClipboard()}>
-                    ⚡ 瞬移发送文本
-                  </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  {/* 原生文件与文件夹选择按钮 */}
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '6px 12px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => SelectAndSendFile(selectedPeer?.ip || '127.0.0.1', selectedPeer?.port || formConfig.port || 9988)}
+                      title="打开系统原生文件选择器，支持任意格式大文件零拷贝分块直传"
+                    >
+                      <span>📄 选文件直传</span>
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '6px 12px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => SelectAndSendFolder(selectedPeer?.ip || '127.0.0.1', selectedPeer?.port || formConfig.port || 9988)}
+                      title="选择本地任意文件夹，后端自动递归压缩为 ZIP 并流式直传"
+                    >
+                      <span>📂 选文件夹(自动ZIP)</span>
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <button className="btn btn-primary" onClick={() => handleSendClipboard()}>
+                      ⚡ 瞬移发送文本
+                    </button>
+                  </div>
                 </div>
               </div>
 

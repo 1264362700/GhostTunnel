@@ -546,6 +546,13 @@ input:checked + .slider:before {
   cursor: grab;
   user-select: none;
   animation: pulseWormhole 4s ease-in-out infinite;
+  --wails-draggable: drag;
+  -webkit-app-region: drag;
+}
+
+.wormhole-bubble button {
+  --wails-draggable: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 .wormhole-bubble:hover {

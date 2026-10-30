@@ -1,9 +1,11 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/grandcat/zeroconf"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 type Config struct {
@@ -44,6 +47,15 @@ type ClipboardMessage struct {
 	Time      string `json:"time"`
 }
 
+type incomingFileState struct {
+	file       *os.File
+	filename   string
+	totalBytes int64
+	recvBytes  int64
+	isFolder   bool
+	startTime  time.Time
+}
+
 type P2PService struct {
 	mu              sync.Mutex
 	ctx             context.Context
@@ -56,8 +68,10 @@ type P2PService struct {
 	hostname        string
 	peersMap        map[string]PeerInfo
 	peerWindows     map[string]application.Window
+	incomingFiles   map[uint64]*incomingFileState
 	tcpListener     net.Listener
 	notchWindow     *application.NotchWindow
+	mainWindow      application.Window
 }
 
 // 跨平台智能获取配置文件物理路径：
@@ -439,6 +453,88 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			if p.notchWindow != nil {
 				p.notchWindow.Show()
 			}
+		case MsgTypeFileMeta:
+			var meta FileMeta
+			if err := json.Unmarshal(frame.Payload, &meta); err != nil {
+				log.Printf("❌ 解析文件元数据失败: %v", err)
+				continue
+			}
+
+			// 保存到系统标准 Downloads/GhostTunnel 目录
+			homeDir, _ := os.UserHomeDir()
+			downloadDir := filepath.Join(homeDir, "Downloads", "GhostTunnel")
+			_ = os.MkdirAll(downloadDir, 0755)
+
+			savePath := filepath.Join(downloadDir, meta.Filename)
+			dstFile, err := os.Create(savePath)
+			if err != nil {
+				log.Printf("❌ 创建接收文件失败: %v", err)
+				continue
+			}
+
+			p.mu.Lock()
+			if p.incomingFiles == nil {
+				p.incomingFiles = make(map[uint64]*incomingFileState)
+			}
+			p.incomingFiles[meta.StreamID] = &incomingFileState{
+				file:       dstFile,
+				filename:   meta.Filename,
+				totalBytes: meta.FileSize,
+				recvBytes:  0,
+				isFolder:   meta.IsFolder,
+				startTime:  time.Now(),
+			}
+			p.mu.Unlock()
+
+			log.Printf("📥 [开始接收文件/文件夹压缩包] 来源: %s, 文件名: %s, 大小: %d 字节", remoteAddr, meta.Filename, meta.FileSize)
+			if app := application.Get(); app != nil {
+				app.Event.Emit("p2p:transfer:start", meta)
+			}
+			if p.notchWindow != nil {
+				p.notchWindow.Show()
+			}
+
+		case MsgTypeFileChunk:
+			p.mu.Lock()
+			st, exists := p.incomingFiles[frame.StreamID]
+			p.mu.Unlock()
+
+			if exists && st != nil && st.file != nil {
+				_, _ = st.file.Write(frame.Payload)
+				st.recvBytes += int64(len(frame.Payload))
+
+				elapsed := time.Since(st.startTime).Seconds()
+				if elapsed <= 0 {
+					elapsed = 0.001
+				}
+				speedBps := float64(st.recvBytes) / elapsed
+				percent := float64(st.recvBytes) / float64(st.totalBytes) * 100
+
+				prog := TransferProgress{
+					StreamID:   frame.StreamID,
+					Filename:   st.filename,
+					TotalBytes: st.totalBytes,
+					SentBytes:  st.recvBytes,
+					SpeedBps:   speedBps,
+					Percent:    percent,
+					IsComplete: st.recvBytes >= st.totalBytes,
+				}
+				if app := application.Get(); app != nil {
+					app.Event.Emit("p2p:transfer:progress", prog)
+				}
+
+				if st.recvBytes >= st.totalBytes {
+					_ = st.file.Close()
+					p.mu.Lock()
+					delete(p.incomingFiles, frame.StreamID)
+					p.mu.Unlock()
+					log.Printf("✅ [文件接收完毕] 文件名: %s", st.filename)
+					if app := application.Get(); app != nil {
+						app.Event.Emit("p2p:transfer:completed", prog)
+					}
+				}
+			}
+
 		case MsgTypePing:
 			// 回复 pong 心跳帧
 			_ = EncodeFrame(conn, Frame{MsgType: MsgTypePing})
@@ -503,6 +599,225 @@ func (p *P2PService) SendImage(targetIP string, targetPort int, imageDataURL str
 	}
 
 	log.Printf("🖼️ [即焚图片已直传] 目标: %s, 大小: %d 字节", addr, len(frame.Payload))
+	return nil
+}
+
+// 递归压缩文件夹为 ZIP 格式
+func zipFolder(srcDir string, destZip string) error {
+	zipFile, err := os.Create(destZip)
+	if err != nil {
+		return err
+	}
+	defer zipFile.Close()
+
+	archive := zip.NewWriter(zipFile)
+	defer archive.Close()
+
+	srcDir = filepath.Clean(srcDir)
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(relPath)
+		if info.IsDir() {
+			header.Name += "/"
+		} else {
+			header.Method = zip.Deflate
+		}
+
+		writer, err := archive.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			_, err = io.Copy(writer, file)
+			return err
+		}
+		return nil
+	})
+}
+
+// 供前端/拖拽直接调用的文件与文件夹发送核心方法 (大文件流式管道分块直传，避免 OOM)
+func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath string) error {
+	fi, err := os.Stat(localPath)
+	if err != nil {
+		return fmt.Errorf("找不到指定物理文件: %w", err)
+	}
+
+	actualPath := localPath
+	isFolder := fi.IsDir()
+	filename := fi.Name()
+
+	// 若为目录，自动调用 zipFolder 递归打包压缩
+	if isFolder {
+		tmpZip := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.zip", filename, time.Now().Unix()))
+		if err := zipFolder(localPath, tmpZip); err != nil {
+			return fmt.Errorf("压缩文件夹失败: %w", err)
+		}
+		defer os.Remove(tmpZip)
+		actualPath = tmpZip
+		filename = filename + ".zip"
+		fi, _ = os.Stat(actualPath)
+	}
+
+	fileSize := fi.Size()
+	streamID := uint64(time.Now().UnixNano())
+
+	if targetIP == "" {
+		targetIP = "127.0.0.1"
+	}
+	if targetPort <= 0 {
+		targetPort = 9988
+	}
+
+	addr := fmt.Sprintf("%s:%d", targetIP, targetPort)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("建立点对点直传失败(%s): %w", addr, err)
+	}
+	defer conn.Close()
+
+	// 1. 发送元数据帧 MsgTypeFileMeta
+	meta := FileMeta{
+		StreamID: streamID,
+		Filename: filename,
+		FileSize: fileSize,
+		IsFolder: isFolder,
+	}
+	metaBytes, _ := json.Marshal(meta)
+	metaFrame := Frame{
+		MsgType:  MsgTypeFileMeta,
+		StreamID: streamID,
+		Payload:  metaBytes,
+	}
+	if err := EncodeFrame(conn, metaFrame); err != nil {
+		return fmt.Errorf("发送文件元数据失败: %w", err)
+	}
+
+	// 2. 以 2MB 固定环形缓冲区流式分块直传 (零内存拷贝，绝不 OOM)
+	file, err := os.Open(actualPath)
+	if err != nil {
+		return fmt.Errorf("读取物理文件失败: %w", err)
+	}
+	defer file.Close()
+
+	buf := make([]byte, 2*1024*1024) // 2MB chunk
+	var sentBytes int64
+	startTime := time.Now()
+
+	for {
+		n, rErr := file.Read(buf)
+		if n > 0 {
+			chunkFrame := Frame{
+				MsgType:  MsgTypeFileChunk,
+				StreamID: streamID,
+				Payload:  buf[:n],
+			}
+			if err := EncodeFrame(conn, chunkFrame); err != nil {
+				return fmt.Errorf("发送文件数据分块失败: %w", err)
+			}
+			sentBytes += int64(n)
+
+			elapsed := time.Since(startTime).Seconds()
+			if elapsed <= 0 {
+				elapsed = 0.001
+			}
+			speedBps := float64(sentBytes) / elapsed
+			percent := float64(sentBytes) / float64(fileSize) * 100
+
+			prog := TransferProgress{
+				StreamID:   streamID,
+				Filename:   filename,
+				TotalBytes: fileSize,
+				SentBytes:  sentBytes,
+				SpeedBps:   speedBps,
+				Percent:    percent,
+				IsComplete: sentBytes >= fileSize,
+			}
+			if app := application.Get(); app != nil {
+				app.Event.Emit("p2p:transfer:progress", prog)
+			}
+		}
+		if rErr == io.EOF {
+			break
+		}
+		if rErr != nil {
+			return fmt.Errorf("流式读取文件分块异常: %w", rErr)
+		}
+	}
+
+	log.Printf("🚀 [文件/文件夹已传输完成] 目标: %s, 文件名: %s, 总字节: %d", addr, filename, fileSize)
+	return nil
+}
+
+// 供前端一键拉起原生操作系统文件选择器
+func (p *P2PService) SelectAndSendFile(targetIP string, targetPort int) error {
+	app := application.Get()
+	if app == nil {
+		return fmt.Errorf("应用未初始化")
+	}
+
+	dialog := app.Dialog.OpenFile()
+	dialog.SetTitle("选择要瞬移直传的文件")
+	dialog.CanChooseFiles(true)
+	dialog.CanChooseDirectories(false)
+
+	filePath, err := dialog.PromptForSingleSelection()
+	if err != nil || filePath == "" {
+		return nil
+	}
+
+	return p.SendFileOrFolder(targetIP, targetPort, filePath)
+}
+
+// 供前端一键拉起原生操作系统文件夹选择器 (自动 zip 压缩并直传)
+func (p *P2PService) SelectAndSendFolder(targetIP string, targetPort int) error {
+	app := application.Get()
+	if app == nil {
+		return fmt.Errorf("应用未初始化")
+	}
+
+	dialog := app.Dialog.OpenFile()
+	dialog.SetTitle("选择要自动压缩并直传的文件夹")
+	dialog.CanChooseFiles(false)
+	dialog.CanChooseDirectories(true)
+
+	dirPath, err := dialog.PromptForSingleSelection()
+	if err != nil || dirPath == "" {
+		return nil
+	}
+
+	return p.SendFileOrFolder(targetIP, targetPort, dirPath)
+}
+
+func (p *P2PService) setMainWindow(w application.Window) {
+	p.mainWindow = w
+}
+
+func (p *P2PService) ShowMainWindow() error {
+	if p.mainWindow != nil {
+		p.mainWindow.Show()
+		p.mainWindow.Focus()
+	}
 	return nil
 }
 
@@ -575,7 +890,7 @@ func (p *P2PService) OpenPeerWindow(instance string, ip string, port int) error 
 	return nil
 }
 
-// 打开桌面边缘极简吸附悬浮球
+// 打开桌面边缘极简吸附悬浮球 (满血版：支持原生文件/文件夹拖拽 & 鼠标拖动 & 双击呼出)
 func (p *P2PService) OpenDropzoneWindow() error {
 	app := application.Get()
 	if app == nil {
@@ -589,7 +904,7 @@ func (p *P2PService) OpenDropzoneWindow() error {
 		return nil
 	}
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             windowName,
 		Title:            "瞬移虫洞",
 		Width:            150,
@@ -597,6 +912,7 @@ func (p *P2PService) OpenDropzoneWindow() error {
 		Frameless:        true,
 		DisableResize:    true,
 		AlwaysOnTop:      true,
+		EnableFileDrop:   true, // 开启原生文件拖入！
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
 		Mac: application.MacWindow{
@@ -604,6 +920,36 @@ func (p *P2PService) OpenDropzoneWindow() error {
 		},
 		URL: "/?view=dropzone",
 	})
+
+	// 监听系统级文件拖入事件：捕获物理绝对路径，自动打包发送！
+	win.OnWindowEvent(events.Common.WindowFilesDropped, func(event *application.WindowEvent) {
+		files := event.Context().DroppedFiles()
+		log.Printf("🌀 [虫洞吸入文件/文件夹] 物理路径列表: %v", files)
+		if len(files) == 0 {
+			return
+		}
+
+		targetIP := "127.0.0.1"
+		targetPort := 9988
+		p.mu.Lock()
+		for _, peer := range p.peersMap {
+			if peer.IP != "" {
+				targetIP = peer.IP
+				targetPort = peer.Port
+				break
+			}
+		}
+		p.mu.Unlock()
+
+		for _, f := range files {
+			go func(path string) {
+				if err := p.SendFileOrFolder(targetIP, targetPort, path); err != nil {
+					log.Printf("❌ 虫洞直传失败(%s): %v", path, err)
+				}
+			}(f)
+		}
+	})
+
 	return nil
 }
 

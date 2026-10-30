@@ -149,5 +149,50 @@ export class ServiceStatus {
     }
 }
 
+export class TransferProgress {
+    "stream_id": number;
+    "filename": string;
+    "total_bytes": number;
+    "sent_bytes": number;
+    "speed_bps": number;
+    "percent": number;
+    "is_complete": boolean;
+
+    /** Creates a new TransferProgress instance. */
+    constructor($$source: Partial<TransferProgress> = {}) {
+        if (!("stream_id" in $$source)) {
+            this["stream_id"] = 0;
+        }
+        if (!("filename" in $$source)) {
+            this["filename"] = "";
+        }
+        if (!("total_bytes" in $$source)) {
+            this["total_bytes"] = 0;
+        }
+        if (!("sent_bytes" in $$source)) {
+            this["sent_bytes"] = 0;
+        }
+        if (!("speed_bps" in $$source)) {
+            this["speed_bps"] = 0;
+        }
+        if (!("percent" in $$source)) {
+            this["percent"] = 0;
+        }
+        if (!("is_complete" in $$source)) {
+            this["is_complete"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransferProgress instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TransferProgress {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TransferProgress($$parsedSource as Partial<TransferProgress>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);

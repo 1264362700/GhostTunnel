@@ -20,6 +20,8 @@ const (
 	MsgTypeHandshake uint8 = 0x01 // 握手帧
 	MsgTypeText      uint8 = 0x02 // 即焚剪贴流/文本
 	MsgTypeImage     uint8 = 0x03 // 即焚剪贴流/图片 (PNG/JPEG)
+	MsgTypeFileMeta  uint8 = 0x04 // 大文件/文件夹元数据帧
+	MsgTypeFileChunk uint8 = 0x05 // 大文件/文件夹二进制分块数据帧
 	MsgTypePing      uint8 = 0x09 // 心跳探活
 )
 
@@ -34,6 +36,23 @@ type Frame struct {
 	MsgType  uint8
 	StreamID uint64
 	Payload  []byte
+}
+
+type FileMeta struct {
+	StreamID uint64 `json:"stream_id"`
+	Filename string `json:"filename"`
+	FileSize int64  `json:"file_size"`
+	IsFolder bool   `json:"is_folder"`
+}
+
+type TransferProgress struct {
+	StreamID   uint64  `json:"stream_id"`
+	Filename   string  `json:"filename"`
+	TotalBytes int64   `json:"total_bytes"`
+	SentBytes  int64   `json:"sent_bytes"`
+	SpeedBps   float64 `json:"speed_bps"`
+	Percent    float64 `json:"percent"`
+	IsComplete bool    `json:"is_complete"`
 }
 
 // 封包编码为二进制字节流并写入对端连接
