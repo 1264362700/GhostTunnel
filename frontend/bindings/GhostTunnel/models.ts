@@ -50,6 +50,11 @@ export class Config {
     "auto_broadcast": boolean;
     "auto_discovery": boolean;
 
+    /**
+     * 设备名 -> 授权保存目录
+     */
+    "trusted_senders": { [_ in string]?: string };
+
     /** Creates a new Config instance. */
     constructor($$source: Partial<Config> = {}) {
         if (!("device_name" in $$source)) {
@@ -70,6 +75,9 @@ export class Config {
         if (!("auto_discovery" in $$source)) {
             this["auto_discovery"] = false;
         }
+        if (!("trusted_senders" in $$source)) {
+            this["trusted_senders"] = {};
+        }
 
         Object.assign(this, $$source);
     }
@@ -78,7 +86,11 @@ export class Config {
      * Creates a new Config instance from a string or object.
      */
     static createFrom($$source: any = {}): Config {
+        const $$createField6_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("trusted_senders" in $$parsedSource) {
+            $$parsedSource["trusted_senders"] = $$createField6_0($$parsedSource["trusted_senders"]);
+        }
         return new Config($$parsedSource as Partial<Config>);
     }
 }
@@ -111,12 +123,53 @@ export class PeerInfo {
      * Creates a new PeerInfo instance from a string or object.
      */
     static createFrom($$source: any = {}): PeerInfo {
-        const $$createField3_0 = $$createType0;
+        const $$createField3_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("text" in $$parsedSource) {
             $$parsedSource["text"] = $$createField3_0($$parsedSource["text"]);
         }
         return new PeerInfo($$parsedSource as Partial<PeerInfo>);
+    }
+}
+
+export class PendingFileRequest {
+    "stream_id": number;
+    "filename": string;
+    "file_size": number;
+    "is_folder": boolean;
+    "sender_name": string;
+    "sender_ip": string;
+
+    /** Creates a new PendingFileRequest instance. */
+    constructor($$source: Partial<PendingFileRequest> = {}) {
+        if (!("stream_id" in $$source)) {
+            this["stream_id"] = 0;
+        }
+        if (!("filename" in $$source)) {
+            this["filename"] = "";
+        }
+        if (!("file_size" in $$source)) {
+            this["file_size"] = 0;
+        }
+        if (!("is_folder" in $$source)) {
+            this["is_folder"] = false;
+        }
+        if (!("sender_name" in $$source)) {
+            this["sender_name"] = "";
+        }
+        if (!("sender_ip" in $$source)) {
+            this["sender_ip"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PendingFileRequest instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PendingFileRequest {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PendingFileRequest($$parsedSource as Partial<PendingFileRequest>);
     }
 }
 
@@ -195,4 +248,5 @@ export class TransferProgress {
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
+const $$createType0 = $Create.Map($Create.Any, $Create.Any);
+const $$createType1 = $Create.Array($Create.Any);

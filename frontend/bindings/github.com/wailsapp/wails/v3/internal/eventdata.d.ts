@@ -17,6 +17,7 @@ declare module "@wailsio/runtime" {
             "p2p:status:change": main$0.ServiceStatus;
             "p2p:transfer:completed": main$0.TransferProgress;
             "p2p:transfer:progress": main$0.TransferProgress;
+            "p2p:transfer:request": main$0.PendingFileRequest;
             "time": string;
         }
     }

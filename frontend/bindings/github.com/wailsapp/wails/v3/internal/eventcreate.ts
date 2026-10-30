@@ -17,6 +17,7 @@ function configure() {
         "p2p:status:change": $$createType2,
         "p2p:transfer:completed": $$createType3,
         "p2p:transfer:progress": $$createType3,
+        "p2p:transfer:request": $$createType4,
     }));
 }
 
@@ -25,5 +26,6 @@ const $$createType0 = main$0.ClipboardMessage.createFrom;
 const $$createType1 = main$0.PeerInfo.createFrom;
 const $$createType2 = main$0.ServiceStatus.createFrom;
 const $$createType3 = main$0.TransferProgress.createFrom;
+const $$createType4 = main$0.PendingFileRequest.createFrom;
 
 configure();

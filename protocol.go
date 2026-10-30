@@ -17,12 +17,14 @@ import (
 const (
 	MagicHeader uint32 = 0x47485354 // "GHST"
 
-	MsgTypeHandshake uint8 = 0x01 // 握手帧
-	MsgTypeText      uint8 = 0x02 // 即焚剪贴流/文本
-	MsgTypeImage     uint8 = 0x03 // 即焚剪贴流/图片 (PNG/JPEG)
-	MsgTypeFileMeta  uint8 = 0x04 // 大文件/文件夹元数据帧
-	MsgTypeFileChunk uint8 = 0x05 // 大文件/文件夹二进制分块数据帧
-	MsgTypePing      uint8 = 0x09 // 心跳探活
+	MsgTypeHandshake    uint8 = 0x01 // 握手帧
+	MsgTypeText         uint8 = 0x02 // 即焚剪贴流/文本
+	MsgTypeImage        uint8 = 0x03 // 即焚剪贴流/图片 (PNG/JPEG)
+	MsgTypeFileMeta     uint8 = 0x04 // 大文件/文件夹元数据帧
+	MsgTypeFileChunk    uint8 = 0x05 // 大文件/文件夹二进制分块数据帧
+	MsgTypeFileRequest  uint8 = 0x06 // 文件传输前置请求帧 (询问对端是否接收)
+	MsgTypeFileResponse uint8 = 0x07 // 文件传输授权应答帧 (对端同意/拒绝/信任)
+	MsgTypePing         uint8 = 0x09 // 心跳探活
 )
 
 var (
@@ -43,6 +45,22 @@ type FileMeta struct {
 	Filename string `json:"filename"`
 	FileSize int64  `json:"file_size"`
 	IsFolder bool   `json:"is_folder"`
+}
+
+type FileRequestPayload struct {
+	StreamID   uint64 `json:"stream_id"`
+	Filename   string `json:"filename"`
+	FileSize   int64  `json:"file_size"`
+	IsFolder   bool   `json:"is_folder"`
+	SenderName string `json:"sender_name"`
+}
+
+type FileResponsePayload struct {
+	StreamID    uint64 `json:"stream_id"`
+	Accepted    bool   `json:"accepted"`
+	CustomPath  string `json:"custom_path"`
+	TrustSender bool   `json:"trust_sender"`
+	SenderName  string `json:"sender_name"`
 }
 
 type TransferProgress struct {

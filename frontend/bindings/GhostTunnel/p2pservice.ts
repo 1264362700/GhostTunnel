@@ -7,11 +7,21 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as application$0 from "../github.com/wailsapp/wails/v3/pkg/application/models.js";
-
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as $models from "./models.js";
+
+/**
+ * 接收方点击【同意接收】
+ */
+export function AcceptFileTransfer(streamID: number, customPath: string, trustSender: boolean, senderName: string): $CancellablePromise<void> {
+    return $Call.ByID(4050837890, streamID, customPath, trustSender, senderName);
+}
+
+/**
+ * 打开原生目录选择器供用户自定义保存路径
+ */
+export function ChooseSaveDirectory(): $CancellablePromise<string> {
+    return $Call.ByID(2159019050);
+}
 
 export function GetConfig(): $CancellablePromise<$models.Config> {
     return $Call.ByID(1375585559).then(($result: any) => {
@@ -34,8 +44,17 @@ export function GetStatus(): $CancellablePromise<$models.ServiceStatus> {
     });
 }
 
-export function HideNotch(): $CancellablePromise<void> {
-    return $Call.ByID(3733933007);
+/**
+ * 获取当前信任的设备白名单
+ */
+export function GetTrustedSenders(): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(1153814018).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+export function HideNotificationCard(): $CancellablePromise<void> {
+    return $Call.ByID(2187229162);
 }
 
 /**
@@ -50,6 +69,20 @@ export function OpenDropzoneWindow(): $CancellablePromise<void> {
  */
 export function OpenPeerWindow(instance: string, ip: string, port: number): $CancellablePromise<void> {
     return $Call.ByID(2217738199, instance, ip, port);
+}
+
+/**
+ * 接收方点击【拒绝接收】
+ */
+export function RejectFileTransfer(streamID: number): $CancellablePromise<void> {
+    return $Call.ByID(2835651229, streamID);
+}
+
+/**
+ * 移除某个信任的设备
+ */
+export function RemoveTrustedSender(senderName: string): $CancellablePromise<void> {
+    return $Call.ByID(684608191, senderName);
 }
 
 export function SaveConfig(cfg: $models.Config): $CancellablePromise<void> {
@@ -78,7 +111,7 @@ export function SendClipboard(targetIP: string, targetPort: number, content: str
 }
 
 /**
- * 供前端/拖拽直接调用的文件与文件夹发送核心方法 (大文件流式管道分块直传，避免 OOM)
+ * 供前端/拖拽直接调用的文件与文件夹发送核心方法 (大文件流式管道分块直传，前置安全授权 + 100ms 节流杜绝卡死)
  */
 export function SendFileOrFolder(targetIP: string, targetPort: number, localPath: string): $CancellablePromise<void> {
     return $Call.ByID(1420938898, targetIP, targetPort, localPath);
@@ -91,16 +124,12 @@ export function SendImage(targetIP: string, targetPort: number, imageDataURL: st
     return $Call.ByID(285988994, targetIP, targetPort, imageDataURL);
 }
 
-export function SetNotchWindow(nw: application$0.NotchWindow | null): $CancellablePromise<void> {
-    return $Call.ByID(1648709797, nw);
-}
-
 export function ShowMainWindow(): $CancellablePromise<void> {
     return $Call.ByID(1928549015);
 }
 
-export function ShowNotch(): $CancellablePromise<void> {
-    return $Call.ByID(2371033456);
+export function ShowNotificationCard(): $CancellablePromise<void> {
+    return $Call.ByID(643921887);
 }
 
 export function StartBroadcast(): $CancellablePromise<void> {
@@ -126,11 +155,8 @@ export function TilePeerWindows(): $CancellablePromise<void> {
     return $Call.ByID(3787314324);
 }
 
-/**
- * 切换刘海窗口的展示与收起
- */
-export function ToggleNotch(): $CancellablePromise<void> {
-    return $Call.ByID(2050985043);
+export function ToggleNotificationCard(): $CancellablePromise<void> {
+    return $Call.ByID(2560111390);
 }
 
 // Private type creation functions
@@ -138,3 +164,4 @@ const $$createType0 = $models.Config.createFrom;
 const $$createType1 = $models.PeerInfo.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = $models.ServiceStatus.createFrom;
+const $$createType4 = $Create.Map($Create.Any, $Create.Any);

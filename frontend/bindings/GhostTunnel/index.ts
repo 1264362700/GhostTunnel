@@ -10,6 +10,7 @@ export {
     ClipboardMessage,
     Config,
     PeerInfo,
+    PendingFileRequest,
     ServiceStatus,
     TransferProgress
 } from "./models.js";

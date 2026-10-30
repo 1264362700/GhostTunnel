@@ -10,8 +10,10 @@ import {
   SelectAndSendFile,
   SelectAndSendFolder,
   ShowMainWindow,
-  ToggleNotch,
-  HideNotch,
+  AcceptFileTransfer,
+  RejectFileTransfer,
+  ChooseSaveDirectory,
+  RemoveTrustedSender,
   OpenPeerWindow,
   OpenDropzoneWindow,
   TilePeerWindows,
@@ -20,14 +22,14 @@ import {
   StartDiscovery,
   StopDiscovery,
 } from '../bindings/GhostTunnel/p2pservice';
-import type { Config, PeerInfo, ServiceStatus, ClipboardMessage, TransferProgress } from '../bindings/GhostTunnel/models';
+import type { Config, PeerInfo, ServiceStatus, ClipboardMessage, TransferProgress, PendingFileRequest } from '../bindings/GhostTunnel/models';
 
 type TabType = 'radar' | 'transfers' | 'settings';
 
 function App() {
   // 解析多窗口路由参数
   const urlParams = new URLSearchParams(window.location.search);
-  const viewMode = urlParams.get('view'); // 'notch' | 'peer' | 'dropzone' | null
+  const viewMode = urlParams.get('view'); // 'notification' | 'peer' | 'dropzone' | null
   const peerInstance = urlParams.get('instance') || '未知节点';
   const peerIP = urlParams.get('ip') || '127.0.0.1';
   const peerPort = parseInt(urlParams.get('port') || '9988');
@@ -47,10 +49,16 @@ function App() {
     domain: 'local.',
     auto_broadcast: true,
     auto_discovery: true,
+    trusted_senders: {},
   });
 
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<PeerInfo | null>(null);
+
+  // 待确认的文件传输请求 (用于卡片授权)
+  const [pendingRequest, setPendingRequest] = useState<PendingFileRequest | null>(null);
+  const [customSaveDir, setCustomSaveDir] = useState<string>('~/Downloads/GhostTunnel');
+  const [trustSenderChecked, setTrustSenderChecked] = useState<boolean>(false);
 
   // 剪贴板消息流与图片捕获
   const [sendText, setSendText] = useState<string>('');
@@ -59,10 +67,6 @@ function App() {
 
   // 阶段三：文件与文件夹分块传输实时进度流
   const [currentTransfer, setCurrentTransfer] = useState<TransferProgress | null>(null);
-
-  // 刘海智能交互状态 (鼠标悬停驻留 & 倒计时自隐)
-  const [notchHovered, setNotchHovered] = useState(false);
-  const notchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -101,25 +105,6 @@ function App() {
     window.addEventListener('paste', handleGlobalPaste);
     return () => window.removeEventListener('paste', handleGlobalPaste);
   }, []);
-
-  // 刘海窗口自动隐藏控制：若鼠标未悬停，5秒后自动隐回刘海
-  useEffect(() => {
-    if (viewMode !== 'notch') return;
-    if (!notchHovered) {
-      if (notchTimerRef.current) clearTimeout(notchTimerRef.current);
-      notchTimerRef.current = setTimeout(() => {
-        HideNotch();
-      }, 5000);
-    } else {
-      if (notchTimerRef.current) {
-        clearTimeout(notchTimerRef.current);
-        notchTimerRef.current = null;
-      }
-    }
-    return () => {
-      if (notchTimerRef.current) clearTimeout(notchTimerRef.current);
-    };
-  }, [viewMode, notchHovered, receivedMessages]);
 
   useEffect(() => {
     GetStatus().then((s) => s && setStatus(s)).catch(console.error);
@@ -176,12 +161,20 @@ function App() {
       showToast(`🎉 文件 [${prog.filename}] 接收完成！已保存至 Downloads/GhostTunnel`);
     });
 
+    const unsubReq = Events.On('p2p:transfer:request', (ev: any) => {
+      if (!ev || !ev.data) return;
+      const req: PendingFileRequest = ev.data;
+      setPendingRequest(req);
+      showToast(`🔔 收到来自 ${req.sender_name} 的文件传输请求`);
+    });
+
     return () => {
       unsubStatus();
       unsubPeer();
       unsubClip();
       unsubProg();
       unsubComp();
+      unsubReq();
     };
   }, []);
 
@@ -315,136 +308,145 @@ function App() {
       domain: 'local.',
       auto_broadcast: true,
       auto_discovery: true,
+      trusted_senders: {},
     };
     setFormConfig(defaults);
     showToast('已重置为默认参数');
   };
 
-  // ==================== 1. 专属刘海灵动胶囊窗口视图 ====================
-  if (viewMode === 'notch') {
-    const latestMsg = receivedMessages[0];
-    const isImage = latestMsg?.media_type === 'image';
+  const handleChooseSaveDir = () => {
+    ChooseSaveDirectory().then((dir) => {
+      if (dir) setCustomSaveDir(dir);
+    }).catch(console.error);
+  };
 
+  const handleAcceptTransfer = (req: PendingFileRequest) => {
+    AcceptFileTransfer(req.stream_id, customSaveDir, trustSenderChecked, req.sender_name)
+      .then(() => {
+        showToast('已授权接收，开始流式零拷贝写入！');
+        setPendingRequest(null);
+      })
+      .catch((err) => showToast(`接收失败: ${err}`));
+  };
+
+  const handleRejectTransfer = (req: PendingFileRequest) => {
+    RejectFileTransfer(req.stream_id)
+      .then(() => {
+        showToast('已拒绝本次传输');
+        setPendingRequest(null);
+      })
+      .catch(console.error);
+  };
+
+  // ==================== 1. 屏幕右上角高端灵动通知卡片视图 (Notification Card) ====================
+  if (viewMode === 'notification') {
     return (
-      <div
-        onMouseEnter={() => setNotchHovered(true)}
-        onMouseLeave={() => {
-          setNotchHovered(false);
-          if (notchTimerRef.current) clearTimeout(notchTimerRef.current);
-          notchTimerRef.current = setTimeout(() => HideNotch(), 1800);
-        }}
-        style={{
-          width: '100vw',
-          height: '100vh',
-          background: '#000000',
-          color: '#f8fafc',
+      <div style={{
+        width: '100vw',
+        height: '100vh',
+        background: 'transparent',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '8px',
+        boxSizing: 'border-box',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          width: '100%',
+          height: '100%',
+          background: 'rgba(15, 18, 26, 0.94)',
+          borderRadius: '16px',
+          border: '1px solid rgba(0, 242, 254, 0.4)',
+          boxShadow: '0 16px 40px rgba(0,0,0,0.85), 0 0 20px rgba(0, 242, 254, 0.25)',
+          backdropFilter: 'blur(24px)',
+          padding: '14px 16px',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
-          padding: '12px 24px 10px',
+          color: '#f8fafc',
           boxSizing: 'border-box',
-          borderBottomLeftRadius: '28px',
-          borderBottomRightRadius: '28px',
-          borderBottom: '1px solid rgba(0, 242, 254, 0.4)',
-          boxShadow: '0 25px 50px rgba(0,0,0,0.95), 0 0 25px rgba(0, 242, 254, 0.25)',
-          overflow: 'hidden',
-          transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          {/* 左侧：胶囊标识与脉冲呼吸灯 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{
-              width: '8px',
-              height: '8px',
-              borderRadius: '50%',
-              background: '#00f2fe',
-              boxShadow: '0 0 10px #00f2fe',
-              animation: 'pulse 2s infinite'
-            }} />
-            <img src="/appicon.png" style={{ width: '22px', height: '22px', borderRadius: '6px' }} alt="" />
-            <div>
-              <div style={{ fontSize: '11px', fontWeight: 800, color: '#00f2fe', letterSpacing: '0.5px' }}>
-                GHOSTTUNNEL 灵动岛
-              </div>
-              <div style={{ fontSize: '9px', color: '#64748b' }}>
-                {notchHovered ? '⚡ 鼠标已锁定 · 保持展开' : '⏳ 鼠标离开或无操作将自动收起'}
+        }}>
+          {/* 卡片头部 */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '16px' }}>⚡</span>
+              <div>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: '#00f2fe' }}>
+                  {pendingRequest ? `来自 ${pendingRequest.sender_name} 的文件` : 'GhostTunnel 传输空间'}
+                </div>
+                <div style={{ fontSize: '10px', color: '#64748b' }}>
+                  {pendingRequest ? `${(pendingRequest.file_size / 1024 / 1024).toFixed(2)} MB · ${pendingRequest.is_folder ? '文件夹(自动ZIP)' : '单个文件'}` : '就绪等待对端请求'}
+                </div>
               </div>
             </div>
+            {pendingRequest && (
+              <span className="pill-badge active" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                待确认
+              </span>
+            )}
           </div>
 
-          {/* 中间：直传内容/图片预览 */}
-          <div style={{
-            flex: 1,
-            margin: '0 16px',
-            background: 'rgba(255, 255, 255, 0.05)',
-            padding: '6px 12px',
-            borderRadius: '10px',
-            border: '1px solid rgba(255,255,255,0.08)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            overflow: 'hidden',
-            maxHeight: '48px',
-          }}>
-            {latestMsg ? (
-              isImage ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-                  <img
-                    src={latestMsg.content}
-                    alt="收到截图"
-                    style={{ height: '36px', borderRadius: '4px', border: '1px solid rgba(0,242,254,0.4)', objectFit: 'contain' }}
-                  />
-                  <span style={{ fontSize: '11px', color: '#e2e8f0', whiteSpace: 'nowrap' }}>
-                    🖼️ 来自 <strong style={{ color: '#00f2fe' }}>{latestMsg.sender}</strong> 的图片直传
-                  </span>
-                </div>
-              ) : (
-                <span style={{ fontSize: '11px', color: '#e2e8f0', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                  📩 <strong style={{ color: '#00f2fe' }}>{latestMsg.sender}:</strong> {latestMsg.content}
+          {/* 文件名与保存路径 */}
+          {pendingRequest ? (
+            <div style={{
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              borderRadius: '8px',
+              padding: '8px 10px',
+              fontSize: '11px',
+            }}>
+              <div style={{ color: '#e2e8f0', fontWeight: 600, wordBreak: 'break-all', marginBottom: '4px' }}>
+                📄 {pendingRequest.filename}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#94a3b8', fontSize: '10px' }}>
+                <span style={{ maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  存至: {customSaveDir}
                 </span>
-              )
-            ) : (
-              <span style={{ fontSize: '11px', color: '#64748b' }}>暂未收到新的直传消息，对端发送时此处将灵动唤醒</span>
-            )}
+                <span
+                  style={{ color: '#00f2fe', cursor: 'pointer', textDecoration: 'underline' }}
+                  onClick={handleChooseSaveDir}
+                >
+                  更改位置
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: '11px', color: '#64748b', textAlign: 'center', padding: '10px 0' }}>
+              暂无待确认的文件传输
+            </div>
+          )}
 
-            {latestMsg && (
-              <button
-                className="btn btn-primary"
-                style={{ padding: '3px 10px', fontSize: '10px', marginLeft: '10px', flexShrink: 0, borderRadius: '6px' }}
-                onClick={() => isImage ? handleCopyImage(latestMsg.content) : handleCopy(latestMsg.content)}
-              >
-                {isImage ? '复制图片' : '复制文本'}
-              </button>
-            )}
-          </div>
+          {/* 信任勾选与操作按钮 */}
+          {pendingRequest ? (
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10px', color: '#94a3b8', cursor: 'pointer', marginBottom: '8px' }}>
+                <input
+                  type="checkbox"
+                  checked={trustSenderChecked}
+                  onChange={(e) => setTrustSenderChecked(e.target.checked)}
+                />
+                <span>信任该设备，后续直接自动接收 (不再询问)</span>
+              </label>
 
-          {/* 右侧：手动收起 */}
-          <button
-            className="btn btn-secondary"
-            style={{ padding: '4px 10px', fontSize: '10px', borderRadius: '6px' }}
-            onClick={() => HideNotch()}
-            title="立即收起刘海窗口"
-          >
-            ✕
-          </button>
-        </div>
-
-        {/* 底部：流光倒计时进度条 (悬停时暂停全满，移开后5秒平滑清零并隐退) */}
-        <div style={{
-          width: '100%',
-          height: '2px',
-          background: 'rgba(255,255,255,0.06)',
-          borderRadius: '1px',
-          overflow: 'hidden',
-          marginTop: '6px'
-        }}>
-          <div style={{
-            height: '100%',
-            background: 'linear-gradient(90deg, #00f2fe, #4facfe)',
-            width: notchHovered ? '100%' : '0%',
-            transition: notchHovered ? 'none' : 'width 5s linear'
-          }} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button
+                  className="btn btn-secondary"
+                  style={{ padding: '4px 12px', fontSize: '11px' }}
+                  onClick={() => handleRejectTransfer(pendingRequest)}
+                >
+                  拒绝
+                </button>
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '4px 14px', fontSize: '11px' }}
+                  onClick={() => handleAcceptTransfer(pendingRequest)}
+                >
+                  同意接收
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -739,17 +741,8 @@ function App() {
             <button
               className="btn btn-secondary"
               style={{ padding: '3px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
-              onClick={() => ToggleNotch()}
-              title="贴合 MacBook 物理刘海 (快捷键 Option+Space)"
-            >
-              <span>🍎 灵动刘海</span>
-            </button>
-
-            <button
-              className="btn btn-secondary"
-              style={{ padding: '3px 10px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}
               onClick={() => OpenDropzoneWindow()}
-              title="打开桌面角落极简吸附悬浮球"
+              title="打开桌面角落极简吸附悬浮球 (支持文件/文件夹拖拽与双击呼出)"
             >
               <span>🔮 桌面虫洞</span>
             </button>
@@ -776,6 +769,82 @@ function App() {
         </header>
 
         <div className="scroll-view">
+          {/* 全局待确认文件授权请求横幅 (杜绝流氓直传) */}
+          {pendingRequest && (
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(0, 242, 254, 0.12) 0%, rgba(15, 23, 42, 0.95) 100%)',
+              border: '1.5px solid rgba(0, 242, 254, 0.55)',
+              borderRadius: '12px',
+              padding: '16px 20px',
+              marginBottom: '20px',
+              boxShadow: '0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(0, 242, 254, 0.25)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '22px' }}>🛡️</span>
+                  <div>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#00f2fe' }}>
+                      收到文件直传授权请求: 来自设备「{pendingRequest.sender_name}」
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                      对端 IP: {pendingRequest.sender_ip} · 请求传输前必须获得你的明确同意
+                    </div>
+                  </div>
+                </div>
+                <span className="pill-badge active">等待授权</span>
+              </div>
+
+              <div style={{
+                background: 'rgba(0,0,0,0.4)',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '12px'
+              }}>
+                <div>
+                  <span style={{ color: '#fff', fontWeight: 600 }}>📄 {pendingRequest.filename}</span>
+                  <span style={{ color: 'var(--text-muted)', marginLeft: '10px' }}>
+                    ({(pendingRequest.file_size / 1024 / 1024).toFixed(2)} MB · {pendingRequest.is_folder ? '文件夹/自动打包ZIP' : '普通文件'})
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>保存到: {customSaveDir}</span>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '2px 8px', fontSize: '10px' }}
+                    onClick={handleChooseSaveDir}
+                  >
+                    更改位置
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={trustSenderChecked}
+                    onChange={(e) => setTrustSenderChecked(e.target.checked)}
+                  />
+                  <span>记住选择并信任该设备，后续直接自动接收 (不再询问)</span>
+                </label>
+
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button className="btn btn-secondary" onClick={() => handleRejectTransfer(pendingRequest)}>
+                    ✕ 拒绝接收
+                  </button>
+                  <button className="btn btn-primary" onClick={() => handleAcceptTransfer(pendingRequest)}>
+                    ✓ 同意接收并落盘
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {activeTab === 'radar' && (
             <div className="radar-grid">
               <div className="card-panel">
@@ -1175,6 +1244,37 @@ function App() {
                 </div>
               </div>
 
+              <div className="settings-group">
+                <div className="group-header">信任设备白名单 (Trusted Devices)</div>
+                <div className="settings-card">
+                  {Object.keys(formConfig.trusted_senders || {}).length === 0 ? (
+                    <div style={{ padding: '16px', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                      暂无已信任的设备。当对端向你发文件时，勾选“信任该设备”即可加入白名单自动接收。
+                    </div>
+                  ) : (
+                    Object.entries(formConfig.trusted_senders || {}).map(([sender, path], idx) => (
+                      <div key={idx} className="form-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div>
+                          <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>💻 {sender}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>自动保存目录: {path}</div>
+                        </div>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '3px 10px', fontSize: '11px', color: 'var(--danger)' }}
+                          onClick={() => {
+                            RemoveTrustedSender(sender).then(() => {
+                              showToast(`已解除对设备 [${sender}] 的信任`);
+                              GetConfig().then((c) => c && setFormConfig(c));
+                            });
+                          }}
+                        >
+                          解除信任
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
               <div className="settings-actions">
                 <button className="btn btn-secondary" onClick={handleResetSettings}>
                   恢复默认

@@ -34,6 +34,11 @@ export const P2pTransferCompleted = "p2p:transfer:completed";
 export const P2pTransferProgress = "p2p:transfer:progress";
 
 /**
+ * Name of the custom event "p2p:transfer:request".
+ */
+export const P2pTransferRequest = "p2p:transfer:request";
+
+/**
  * Name of the custom event "time".
  */
 export const Time = "time";

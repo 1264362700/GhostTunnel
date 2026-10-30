@@ -19,12 +19,13 @@ import (
 )
 
 type Config struct {
-	DeviceName    string `json:"device_name"`
-	ServiceType   string `json:"service_type"`
-	Port          int    `json:"port"`
-	Domain        string `json:"domain"`
-	AutoBroadcast bool   `json:"auto_broadcast"`
-	AutoDiscovery bool   `json:"auto_discovery"`
+	DeviceName     string            `json:"device_name"`
+	ServiceType    string            `json:"service_type"`
+	Port           int               `json:"port"`
+	Domain         string            `json:"domain"`
+	AutoBroadcast  bool              `json:"auto_broadcast"`
+	AutoDiscovery  bool              `json:"auto_discovery"`
+	TrustedSenders map[string]string `json:"trusted_senders"` // 设备名 -> 授权保存目录
 }
 
 type ServiceStatus struct {
@@ -47,31 +48,42 @@ type ClipboardMessage struct {
 	Time      string `json:"time"`
 }
 
+type PendingFileRequest struct {
+	StreamID   uint64 `json:"stream_id"`
+	Filename   string `json:"filename"`
+	FileSize   int64  `json:"file_size"`
+	IsFolder   bool   `json:"is_folder"`
+	SenderName string `json:"sender_name"`
+	SenderIP   string `json:"sender_ip"`
+}
+
 type incomingFileState struct {
-	file       *os.File
-	filename   string
-	totalBytes int64
-	recvBytes  int64
-	isFolder   bool
-	startTime  time.Time
+	file         *os.File
+	filename     string
+	totalBytes   int64
+	recvBytes    int64
+	isFolder     bool
+	startTime    time.Time
+	lastEmitTime time.Time
 }
 
 type P2PService struct {
-	mu              sync.Mutex
-	ctx             context.Context
-	config          Config
-	server          *zeroconf.Server
-	resolver        *zeroconf.Resolver
-	discoveryCancel context.CancelFunc
-	isBroadcasting  bool
-	isDiscovering   bool
-	hostname        string
-	peersMap        map[string]PeerInfo
-	peerWindows     map[string]application.Window
-	incomingFiles   map[uint64]*incomingFileState
-	tcpListener     net.Listener
-	notchWindow     *application.NotchWindow
-	mainWindow      application.Window
+	mu               sync.Mutex
+	ctx              context.Context
+	config           Config
+	server           *zeroconf.Server
+	resolver         *zeroconf.Resolver
+	discoveryCancel  context.CancelFunc
+	isBroadcasting   bool
+	isDiscovering    bool
+	hostname         string
+	peersMap         map[string]PeerInfo
+	peerWindows      map[string]application.Window
+	incomingFiles    map[uint64]*incomingFileState
+	pendingRequests  map[uint64]chan FileResponsePayload
+	tcpListener      net.Listener
+	notificationCard application.Window
+	mainWindow       application.Window
 }
 
 // 跨平台智能获取配置文件物理路径：
@@ -96,12 +108,13 @@ func getConfigPath() string {
 
 func (p *P2PService) loadConfig() {
 	p.config = Config{
-		DeviceName:    "",
-		ServiceType:   "_ghosttunnel._tcp",
-		Port:          9988,
-		Domain:        "local.",
-		AutoBroadcast: true,
-		AutoDiscovery: true,
+		DeviceName:     "",
+		ServiceType:    "_ghosttunnel._tcp",
+		Port:           9988,
+		Domain:         "local.",
+		AutoBroadcast:  true,
+		AutoDiscovery:  true,
+		TrustedSenders: make(map[string]string),
 	}
 
 	path := getConfigPath()
@@ -115,11 +128,16 @@ func (p *P2PService) loadConfig() {
 	} else {
 		log.Printf("[P2P] 成功加载配置文件: %s", path)
 	}
+	if p.config.TrustedSenders == nil {
+		p.config.TrustedSenders = make(map[string]string)
+	}
 }
 
 func (p *P2PService) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
 	p.ctx = ctx
 	p.peersMap = make(map[string]PeerInfo)
+	p.pendingRequests = make(map[uint64]chan FileResponsePayload)
+	p.incomingFiles = make(map[uint64]*incomingFileState)
 	p.loadConfig()
 
 	hostname, _ := os.Hostname()
@@ -435,9 +453,8 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			if app := application.Get(); app != nil {
 				app.Event.Emit("p2p:clipboard:received", msg)
 			}
-			if p.notchWindow != nil {
-				p.notchWindow.Show()
-			}
+			p.ShowNotificationCard()
+
 		case MsgTypeImage:
 			content := string(frame.Payload)
 			msg := ClipboardMessage{
@@ -450,9 +467,72 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 			if app := application.Get(); app != nil {
 				app.Event.Emit("p2p:clipboard:received", msg)
 			}
-			if p.notchWindow != nil {
-				p.notchWindow.Show()
+			p.ShowNotificationCard()
+
+		case MsgTypeFileRequest:
+			var req FileRequestPayload
+			if err := json.Unmarshal(frame.Payload, &req); err != nil {
+				log.Printf("❌ 解析文件传输请求失败: %v", err)
+				continue
 			}
+
+			// 检查发送设备是否在「信任白名单」中
+			p.mu.Lock()
+			trustedPath, isTrusted := p.config.TrustedSenders[req.SenderName]
+			p.mu.Unlock()
+
+			if isTrusted && trustedPath != "" {
+				// 命中白名单：自动同意
+				resp := FileResponsePayload{
+					StreamID:    req.StreamID,
+					Accepted:    true,
+					CustomPath:  trustedPath,
+					TrustSender: true,
+					SenderName:  p.hostname,
+				}
+				respBytes, _ := json.Marshal(resp)
+				_ = EncodeFrame(conn, Frame{MsgType: MsgTypeFileResponse, StreamID: req.StreamID, Payload: respBytes})
+				log.Printf("🛡️ [白名单设备自动接收] 来源: %s, 保存目录: %s", req.SenderName, trustedPath)
+			} else {
+				// 未在白名单：向前端派发请求事件并呼出右上角通知卡片！
+				ch := make(chan FileResponsePayload, 1)
+				p.mu.Lock()
+				if p.pendingRequests == nil {
+					p.pendingRequests = make(map[uint64]chan FileResponsePayload)
+				}
+				p.pendingRequests[req.StreamID] = ch
+				p.mu.Unlock()
+
+				pending := PendingFileRequest{
+					StreamID:   req.StreamID,
+					Filename:   req.Filename,
+					FileSize:   req.FileSize,
+					IsFolder:   req.IsFolder,
+					SenderName: req.SenderName,
+					SenderIP:   remoteAddr,
+				}
+				if app := application.Get(); app != nil {
+					app.Event.Emit("p2p:transfer:request", pending)
+				}
+				p.ShowNotificationCard()
+
+				// 后台等待用户响应 (超时 30 秒默认拒绝)
+				go func(sID uint64, c net.Conn) {
+					select {
+					case resp := <-ch:
+						respBytes, _ := json.Marshal(resp)
+						_ = EncodeFrame(c, Frame{MsgType: MsgTypeFileResponse, StreamID: sID, Payload: respBytes})
+					case <-time.After(30 * time.Second):
+						resp := FileResponsePayload{StreamID: sID, Accepted: false}
+						respBytes, _ := json.Marshal(resp)
+						_ = EncodeFrame(c, Frame{MsgType: MsgTypeFileResponse, StreamID: sID, Payload: respBytes})
+						p.mu.Lock()
+						delete(p.pendingRequests, sID)
+						p.mu.Unlock()
+					}
+				}(req.StreamID, conn)
+			}
+
 		case MsgTypeFileMeta:
 			var meta FileMeta
 			if err := json.Unmarshal(frame.Payload, &meta); err != nil {
@@ -460,7 +540,7 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 				continue
 			}
 
-			// 保存到系统标准 Downloads/GhostTunnel 目录
+			// 保存到系统标准目录或授权自定义目录
 			homeDir, _ := os.UserHomeDir()
 			downloadDir := filepath.Join(homeDir, "Downloads", "GhostTunnel")
 			_ = os.MkdirAll(downloadDir, 0755)
@@ -477,21 +557,19 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 				p.incomingFiles = make(map[uint64]*incomingFileState)
 			}
 			p.incomingFiles[meta.StreamID] = &incomingFileState{
-				file:       dstFile,
-				filename:   meta.Filename,
-				totalBytes: meta.FileSize,
-				recvBytes:  0,
-				isFolder:   meta.IsFolder,
-				startTime:  time.Now(),
+				file:         dstFile,
+				filename:     meta.Filename,
+				totalBytes:   meta.FileSize,
+				recvBytes:    0,
+				isFolder:     meta.IsFolder,
+				startTime:    time.Now(),
+				lastEmitTime: time.Now(),
 			}
 			p.mu.Unlock()
 
-			log.Printf("📥 [开始接收文件/文件夹压缩包] 来源: %s, 文件名: %s, 大小: %d 字节", remoteAddr, meta.Filename, meta.FileSize)
+			log.Printf("📥 [开始分块流式写入] 文件名: %s, 大小: %d 字节", meta.Filename, meta.FileSize)
 			if app := application.Get(); app != nil {
 				app.Event.Emit("p2p:transfer:start", meta)
-			}
-			if p.notchWindow != nil {
-				p.notchWindow.Show()
 			}
 
 		case MsgTypeFileChunk:
@@ -509,6 +587,7 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 				}
 				speedBps := float64(st.recvBytes) / elapsed
 				percent := float64(st.recvBytes) / float64(st.totalBytes) * 100
+				isComplete := st.recvBytes >= st.totalBytes
 
 				prog := TransferProgress{
 					StreamID:   frame.StreamID,
@@ -517,18 +596,23 @@ func (p *P2PService) handleTCPConn(conn net.Conn) {
 					SentBytes:  st.recvBytes,
 					SpeedBps:   speedBps,
 					Percent:    percent,
-					IsComplete: st.recvBytes >= st.totalBytes,
-				}
-				if app := application.Get(); app != nil {
-					app.Event.Emit("p2p:transfer:progress", prog)
+					IsComplete: isComplete,
 				}
 
-				if st.recvBytes >= st.totalBytes {
+				// 🚀 性能保障：100ms 严格事件节流 (Throttling)，彻底杜绝高频 Event 轰炸导致前端 React 卡死
+				if time.Since(st.lastEmitTime) >= 100*time.Millisecond || isComplete {
+					st.lastEmitTime = time.Now()
+					if app := application.Get(); app != nil {
+						app.Event.Emit("p2p:transfer:progress", prog)
+					}
+				}
+
+				if isComplete {
 					_ = st.file.Close()
 					p.mu.Lock()
 					delete(p.incomingFiles, frame.StreamID)
 					p.mu.Unlock()
-					log.Printf("✅ [文件接收完毕] 文件名: %s", st.filename)
+					log.Printf("✅ [文件接收完毕并落盘] 文件名: %s", st.filename)
 					if app := application.Get(); app != nil {
 						app.Event.Emit("p2p:transfer:completed", prog)
 					}
@@ -656,7 +740,7 @@ func zipFolder(srcDir string, destZip string) error {
 	})
 }
 
-// 供前端/拖拽直接调用的文件与文件夹发送核心方法 (大文件流式管道分块直传，避免 OOM)
+// 供前端/拖拽直接调用的文件与文件夹发送核心方法 (大文件流式管道分块直传，前置安全授权 + 100ms 节流杜绝卡死)
 func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath string) error {
 	fi, err := os.Stat(localPath)
 	if err != nil {
@@ -667,7 +751,7 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 	isFolder := fi.IsDir()
 	filename := fi.Name()
 
-	// 若为目录，自动调用 zipFolder 递归打包压缩
+	// 若为目录，自动递归打包为 ZIP
 	if isFolder {
 		tmpZip := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.zip", filename, time.Now().Unix()))
 		if err := zipFolder(localPath, tmpZip); err != nil {
@@ -696,7 +780,36 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 	}
 	defer conn.Close()
 
-	// 1. 发送元数据帧 MsgTypeFileMeta
+	// 1. 发送前置授权请求帧 MsgTypeFileRequest (杜绝流氓直传)
+	req := FileRequestPayload{
+		StreamID:   streamID,
+		Filename:   filename,
+		FileSize:   fileSize,
+		IsFolder:   isFolder,
+		SenderName: p.hostname,
+	}
+	reqBytes, _ := json.Marshal(req)
+	if err := EncodeFrame(conn, Frame{MsgType: MsgTypeFileRequest, StreamID: streamID, Payload: reqBytes}); err != nil {
+		return fmt.Errorf("发送传输请求失败: %w", err)
+	}
+
+	// 等待对端确认授权 (超时 30 秒)
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	respFrame, err := DecodeFrame(conn)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		return fmt.Errorf("等待对端授权超时或网络中断: %w", err)
+	}
+	if respFrame.MsgType != MsgTypeFileResponse {
+		return fmt.Errorf("非法的应答协议帧")
+	}
+
+	var resp FileResponsePayload
+	if err := json.Unmarshal(respFrame.Payload, &resp); err != nil || !resp.Accepted {
+		return fmt.Errorf("对端拒绝接收本次文件传输")
+	}
+
+	// 2. 发送元数据帧 MsgTypeFileMeta
 	meta := FileMeta{
 		StreamID: streamID,
 		Filename: filename,
@@ -704,16 +817,11 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 		IsFolder: isFolder,
 	}
 	metaBytes, _ := json.Marshal(meta)
-	metaFrame := Frame{
-		MsgType:  MsgTypeFileMeta,
-		StreamID: streamID,
-		Payload:  metaBytes,
-	}
-	if err := EncodeFrame(conn, metaFrame); err != nil {
+	if err := EncodeFrame(conn, Frame{MsgType: MsgTypeFileMeta, StreamID: streamID, Payload: metaBytes}); err != nil {
 		return fmt.Errorf("发送文件元数据失败: %w", err)
 	}
 
-	// 2. 以 2MB 固定环形缓冲区流式分块直传 (零内存拷贝，绝不 OOM)
+	// 3. 2MB 环形缓冲区流式分块直传 (零内存拷贝，防 OOM；100ms 节流防前端卡死)
 	file, err := os.Open(actualPath)
 	if err != nil {
 		return fmt.Errorf("读取物理文件失败: %w", err)
@@ -723,6 +831,7 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 	buf := make([]byte, 2*1024*1024) // 2MB chunk
 	var sentBytes int64
 	startTime := time.Now()
+	var lastEmitTime time.Time
 
 	for {
 		n, rErr := file.Read(buf)
@@ -733,7 +842,7 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 				Payload:  buf[:n],
 			}
 			if err := EncodeFrame(conn, chunkFrame); err != nil {
-				return fmt.Errorf("发送文件数据分块失败: %w", err)
+				return fmt.Errorf("发送数据分块失败: %w", err)
 			}
 			sentBytes += int64(n)
 
@@ -743,6 +852,7 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 			}
 			speedBps := float64(sentBytes) / elapsed
 			percent := float64(sentBytes) / float64(fileSize) * 100
+			isComplete := sentBytes >= fileSize
 
 			prog := TransferProgress{
 				StreamID:   streamID,
@@ -751,22 +861,115 @@ func (p *P2PService) SendFileOrFolder(targetIP string, targetPort int, localPath
 				SentBytes:  sentBytes,
 				SpeedBps:   speedBps,
 				Percent:    percent,
-				IsComplete: sentBytes >= fileSize,
+				IsComplete: isComplete,
 			}
-			if app := application.Get(); app != nil {
-				app.Event.Emit("p2p:transfer:progress", prog)
+
+			// 🚀 节流控制：每 100ms 最多派发一次，或传输完成时派发
+			if time.Since(lastEmitTime) >= 100*time.Millisecond || isComplete {
+				lastEmitTime = time.Now()
+				if app := application.Get(); app != nil {
+					app.Event.Emit("p2p:transfer:progress", prog)
+				}
 			}
 		}
 		if rErr == io.EOF {
 			break
 		}
 		if rErr != nil {
-			return fmt.Errorf("流式读取文件分块异常: %w", rErr)
+			return fmt.Errorf("流式读取异常: %w", rErr)
 		}
 	}
 
-	log.Printf("🚀 [文件/文件夹已传输完成] 目标: %s, 文件名: %s, 总字节: %d", addr, filename, fileSize)
+	log.Printf("🚀 [传输完成] 目标: %s, 文件名: %s, 大小: %d 字节", addr, filename, fileSize)
 	return nil
+}
+
+// 接收方点击【同意接收】
+func (p *P2PService) AcceptFileTransfer(streamID uint64, customPath string, trustSender bool, senderName string) error {
+	p.mu.Lock()
+	ch, exists := p.pendingRequests[streamID]
+	delete(p.pendingRequests, streamID)
+
+	if trustSender && senderName != "" {
+		if p.config.TrustedSenders == nil {
+			p.config.TrustedSenders = make(map[string]string)
+		}
+		if customPath == "" {
+			homeDir, _ := os.UserHomeDir()
+			customPath = filepath.Join(homeDir, "Downloads", "GhostTunnel")
+		}
+		p.config.TrustedSenders[senderName] = customPath
+		_ = p.SaveConfig(p.config)
+		log.Printf("🛡️ [已加入信任白名单] 设备: %s, 路径: %s", senderName, customPath)
+	}
+	p.mu.Unlock()
+
+	p.HideNotificationCard()
+
+	if exists && ch != nil {
+		ch <- FileResponsePayload{
+			StreamID:    streamID,
+			Accepted:    true,
+			CustomPath:  customPath,
+			TrustSender: trustSender,
+		}
+		return nil
+	}
+	return fmt.Errorf("请求已超时或不存在")
+}
+
+// 接收方点击【拒绝接收】
+func (p *P2PService) RejectFileTransfer(streamID uint64) error {
+	p.mu.Lock()
+	ch, exists := p.pendingRequests[streamID]
+	delete(p.pendingRequests, streamID)
+	p.mu.Unlock()
+
+	p.HideNotificationCard()
+
+	if exists && ch != nil {
+		ch <- FileResponsePayload{
+			StreamID: streamID,
+			Accepted: false,
+		}
+		return nil
+	}
+	return nil
+}
+
+// 打开原生目录选择器供用户自定义保存路径
+func (p *P2PService) ChooseSaveDirectory() (string, error) {
+	app := application.Get()
+	if app == nil {
+		return "", fmt.Errorf("应用未初始化")
+	}
+
+	dialog := app.Dialog.OpenFile()
+	dialog.SetTitle("选择保存目录")
+	dialog.CanChooseFiles(false)
+	dialog.CanChooseDirectories(true)
+
+	dir, err := dialog.PromptForSingleSelection()
+	if err != nil || dir == "" {
+		return "", nil
+	}
+	return dir, nil
+}
+
+// 获取当前信任的设备白名单
+func (p *P2PService) GetTrustedSenders() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.config.TrustedSenders
+}
+
+// 移除某个信任的设备
+func (p *P2PService) RemoveTrustedSender(senderName string) error {
+	p.mu.Lock()
+	delete(p.config.TrustedSenders, senderName)
+	cfg := p.config
+	p.mu.Unlock()
+	return p.SaveConfig(cfg)
 }
 
 // 供前端一键拉起原生操作系统文件选择器
@@ -821,33 +1024,32 @@ func (p *P2PService) ShowMainWindow() error {
 	return nil
 }
 
-func (p *P2PService) SetNotchWindow(nw *application.NotchWindow) {
-	p.notchWindow = nw
+func (p *P2PService) setNotificationCard(w application.Window) {
+	p.notificationCard = w
 }
 
-// 切换刘海窗口的展示与收起
-func (p *P2PService) ToggleNotch() error {
-	if p.notchWindow == nil {
-		return fmt.Errorf("当前系统环境未支持刘海窗口")
+func (p *P2PService) ShowNotificationCard() {
+	if p.notificationCard != nil {
+		p.notificationCard.Show()
+		p.notificationCard.Focus()
 	}
-	if p.notchWindow.Visibility() {
-		p.notchWindow.Hide()
+}
+
+func (p *P2PService) HideNotificationCard() {
+	if p.notificationCard != nil {
+		p.notificationCard.Hide()
+	}
+}
+
+func (p *P2PService) ToggleNotificationCard() error {
+	if p.notificationCard == nil {
+		return fmt.Errorf("通知卡片未初始化")
+	}
+	if p.notificationCard.IsVisible() {
+		p.notificationCard.Hide()
 	} else {
-		p.notchWindow.Show()
-	}
-	return nil
-}
-
-func (p *P2PService) HideNotch() error {
-	if p.notchWindow != nil {
-		p.notchWindow.Hide()
-	}
-	return nil
-}
-
-func (p *P2PService) ShowNotch() error {
-	if p.notchWindow != nil {
-		p.notchWindow.Show()
+		p.notificationCard.Show()
+		p.notificationCard.Focus()
 	}
 	return nil
 }

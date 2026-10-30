@@ -20,6 +20,7 @@ func init() {
     application.RegisterEvent[PeerInfo]("p2p:peer:found")
     application.RegisterEvent[ServiceStatus]("p2p:status:change")
     application.RegisterEvent[ClipboardMessage]("p2p:clipboard:received")
+    application.RegisterEvent[PendingFileRequest]("p2p:transfer:request")
     application.RegisterEvent[TransferProgress]("p2p:transfer:progress")
     application.RegisterEvent[TransferProgress]("p2p:transfer:completed")
 }
@@ -61,26 +62,28 @@ func main() {
     })
     p2pService.setMainWindow(mainWindow)
 
-    // 2. 创建贴合 MacBook 顶部刘海的灵动胶囊窗口 (Notch Window)
-    notchWindow := app.Window.NewNotchWindow(application.NotchWindowOptions{
-        Width:    680,
-        Height:   115,
-        Animated: true,
-        WindowOptions: application.WebviewWindowOptions{
-            Name:             "notch-capsule-window",
-            URL:              "/?view=notch",
-            HideOnEscape:     true,
-            HideOnFocusLost:  true, // 失焦自动优雅缩回
-            AlwaysOnTop:      true,
-            BackgroundType:   application.BackgroundTypeTransparent,
-            BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+    // 2. 创建屏幕右上角的高端灵动通知卡片窗口 (Notification Card Window)
+    notificationCard := app.Window.NewWithOptions(application.WebviewWindowOptions{
+        Name:             "notification-card-window",
+        Title:            "GhostTunnel 传输请求",
+        Width:            390,
+        Height:           210,
+        AlwaysOnTop:      true,
+        Frameless:        true,
+        DisableResize:    true,
+        HideOnEscape:     true,
+        BackgroundType:   application.BackgroundTypeTransparent,
+        BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+        Mac: application.MacWindow{
+            Backdrop: application.MacBackdropTransparent,
         },
+        URL: "/?view=notification",
     })
-    p2pService.SetNotchWindow(notchWindow)
+    p2pService.setNotificationCard(notificationCard)
 
-    // 3. 注册全局快捷键 Option+Space 随时唤出/收起刘海窗口
+    // 3. 注册全局快捷键 Option+Space 随时唤出/收起主控制中心
     _ = app.GlobalShortcut.Register("Option+Space", func() {
-        _ = p2pService.ToggleNotch()
+        _ = p2pService.ShowMainWindow()
     })
 
     err := app.Run()
